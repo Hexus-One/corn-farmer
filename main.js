@@ -1,6 +1,6 @@
 const mineflayer = require('mineflayer');
 const { mineflayer: mineflayerViewer } = require('prismarine-viewer');
-const { pathfinder, Movements, goals: { GoalNear, GoalPlaceBlock, GoalLookAtBlock } } = require('mineflayer-pathfinder');
+const { pathfinder, Movements, goals: { GoalNear, GoalNearXZ, GoalPlaceBlock, GoalLookAtBlock } } = require('mineflayer-pathfinder');
 const vec3 = require('vec3');
 
 const RANGE_GOAL = 1; // get within this radius of the player
@@ -18,11 +18,17 @@ bot.on('error', err => console.log(err));
 
 bot.loadPlugin(pathfinder);
 
+// please forgive this mess of fields
 let defaultMove;
 let delicateMove;
 let mcData; // gets loaded after bot joins server (version unknown)
 let currentGoal = null;
 let fakeTable = { id: 'minecraft:crafting_table' }
+let tableID;
+let tableRecipes;
+let plankIDs = [];
+let logItemIDs = [];
+let logBlockIDs = [];
 
 bot.once('spawn', async () => {
     console.log("Joined server!");
@@ -32,6 +38,21 @@ bot.once('spawn', async () => {
     delicateMove = new Movements(bot);
     delicateMove.canDig = false;
     delicateMove.placeCost = 9999;
+
+    tableID = mcData.itemsByName["crafting_table"].id;
+    tableRecipes = bot.recipesAll(tableID, null, null);
+    plankIDs = tableRecipes.reduce((plankArray, recipe) => {
+        plankArray.push(recipe.delta[0].id);
+        return plankArray;
+    }, []);
+    plankIDs.forEach(plank => {
+        // get a list of all logs used to craft the planks while we're here
+        bot.recipesAll(plank, null, null).forEach(logRecipe => {
+            logItemIDs.push(logRecipe.delta[0].id);
+            // convert itemID to blockID
+            logBlockIDs.push(mcData.blocksByName[mcData.items[logRecipe.delta[0].id].name].id);
+        });
+    });
 });
 
 bot.on('chat', async (username, message) => {
@@ -62,11 +83,12 @@ bot.on('blockUpdate', async (oldBlock, newBlock) => {
         console.log("Farmland decayed/trampled :c");
         let dirt = newBlock.position
         currentGoal = new GoalNear(dirt.x, dirt.y + 1, dirt.z, RANGE_GOAL);
+        await equipHoe(); // maybe this should happen at the start
         bot.pathfinder.setMovements(delicateMove);
         await bot.pathfinder.goto(currentGoal);
-        currentGoal = null;
-        await equipHoe(); // maybe this should happen at the start
+        await bot.lookAt(dirt, true);
         await bot.activateBlock(bot.blockAt(dirt)); // till the dirt
+        currentGoal = null;
     }
 })
 
@@ -86,45 +108,113 @@ async function equipHoe() {
 // assumes vanilla crafting recipes as of Java 1.19.3
 async function craftHoe(count = 1) {
     let hoeID = mcData.itemsByName["wooden_hoe"].id;
-    let hoeRecipes = bot.recipesAll(hoeID, null, fakeTable);
-
     // check we have sticks, planks and a table (and acquire them if we don't)
-    if (countInventory("crafting_table") < 1) await craftCraftingTable();
-    if (countInventory("sticks") < count * 2) await craftSticks();
-    if (countInventory("sticks") < count * 2) await craftSticks();
-    let stickID = mcData.itemsByName['stick'].id;
-    let stickRecipes = bot.recipesAll(stickID, null, null);
-
+    await getCraftingTable();
+    await getSticks(2);
+    await getPlanks(2);
+    let hoeRecipes = bot.recipesFor(hoeID, null, 1, fakeTable);
     console.log(hoeRecipes);
-
+    await craftWithTable(hoeRecipes[0]);
 };
 
-async function craftCraftingTable() {
-    let tableID = mcData.itemsByName["crafting_table"].id;
-    let tableRecipes = bot.recipesAll(tableID, null, null);
-
-    // get a list of planks needed
-    let plankIDs = tableRecipes.reduce((plankArray, recipe) => {
-        plankArray.push(recipe.delta[0].id);
-        return plankArray;
-    }, []);
-    // check to see if we actually have any planks
-    let plankCount = 0;
-    let logItemIDs = [];
-    let logBlockIDs = [];
-    plankIDs.forEach(plank => {
-        plankCount = Math.max(plankCount, countInventory(mcData.items[plank].name));
-        // also get a list of all logs used to craft the planks while we're here
-        bot.recipesAll(plank, null, null).forEach(logRecipe => {
-            logItemIDs.push(logRecipe.delta[0].id);
-            // convert item to block
-            logBlockIDs.push(mcData.blocksByName[mcData.items[logRecipe.delta[0].id].name].id);
-        });
+// crafting something using a crafting table
+async function craftWithTable(recipe, count = 1) {
+    airIDs = [mcData.blocksByName["air"].id, mcData.blocksByName["cave_air"].id];
+    getCraftingTable();
+    // Find somewhere to put the crafting table.
+    let solidBlocks = bot.findBlocks({
+        matching: (block) => {
+            return block.type !== airIDs[0] && block.type !== airIDs[1];
+        },
+        count: 64,
+        maxDistance: 10,
     });
-    // otherwise attempt to craft/obtain each type of plank
-    if (plankCount < 4) {
-        // find the nearest log
-        // punch it
+
+    let craftingSpot;
+
+    for (position of solidBlocks) {
+        let block = bot.blockAt(position);
+        let topBlock = bot.blockAt(block.position.offset(0, 1, 0));
+
+        if (topBlock.type !== airIDs[0] && topBlock.type !== airIDs[1]) continue;
+        if (bot.entity.position.xzDistanceTo(position) <= 2) continue;
+
+        craftingSpot = block;
+        break;
+    }
+
+    // Place the crafting table.
+    if (!craftingSpot) console.log("Couldn't find somewhere to put the crafting table.");
+
+    let tablePosition = craftingSpot.position;
+
+    await bot.equip(tableID);
+    currentGoal = new GoalLookAtBlock(tablePosition, bot.world);
+    await bot.pathfinder.goto(currentGoal);
+    await bot.placeBlock(craftingSpot, { x: 0, y: 1, z: 0 }).catch(console.log);
+
+    console.log("Placed the table! (maybe)");
+
+    await bot.waitForTicks(1);
+
+    let table = bot.findBlock({
+		matching: (block)=>{
+			return block.name === "crafting_table";
+		},
+		maxDistance: 4,
+	});
+    await bot.craft(recipe, count, table);
+    currentGoal = null;
+}
+
+// if we don't have planks
+// if we don't have logs, look for logs
+// craft planks from logs
+// craft table from planks
+async function getCraftingTable(count = 1) {
+    while (countInventory("crafting_table") < count) {
+        // check to see if we actually have any planks
+        // otherwise attempt to craft/obtain each type of plank
+        await getPlanks(4);
+        // we should have >= 4 planks of some kind at this point
+        // after all this, we can attempt to craft a table
+        tableRecipes = bot.recipesFor(tableID, null, 1, null);
+        await bot.craft(tableRecipes[0]);
+        await bot.equip(mcData.itemsByName["crafting_table"].id)
+    }
+};
+
+// acquire sticks
+async function getSticks(count) {
+    let stickID = mcData.itemsByName['stick'].id;
+    while (countInventory("stick") < count) {
+        await getPlanks(2);
+        let stickRecipes = bot.recipesFor(stickID, null, 1, null);
+        await bot.craft(stickRecipes[0]);
+    }
+}
+
+// acquire planks
+async function getPlanks(count) {
+    while (countMulti(plankIDs) < count) {
+        await getLog(1);
+        // we should have a log now hehe
+        // attempt to craft each plank recipe and exit at the first successful one
+        let plankRecipe;
+        plankIDs.some(plank => {
+            let plankRecipes = bot.recipesFor(plank, null, 1, null);
+            if (plankRecipes.length > 0) {
+                plankRecipe = plankRecipes[0];
+                return true;
+            }
+        });
+        await bot.craft(plankRecipe);
+    }
+}
+
+// acquire log
+async function getLog(count) {
+    while (countMulti(logItemIDs) < count) {
         let logs = bot.findBlocks({
             matching: logBlockIDs,
             maxDistance: 16
@@ -134,41 +224,57 @@ async function craftCraftingTable() {
             return;
         }
         let log = bot.blockAt(logs[0]);
-        currentGoal = new GoalLookAtBlock(logs[0], bot.world);
+        // unsure if GoalNear or GoalLookAtBlock is better
         bot.pathfinder.setMovements(defaultMove);
-        await bot.pathfinder.goto(currentGoal);
+        currentGoal = new GoalNearXZ(logs[0].x, logs[0].z, RANGE_GOAL);
+        await bot.pathfinder.goto(currentGoal).catch(console.log);
+        await bot.lookAt(logs[0]);
+        bot.setControlState('forward', true); // shuffle forwards a bit
+        await bot.waitForTicks(3);
+        bot.setControlState('forward', false);
         await bot.dig(log);
-        await getPromiseFromEvent(bot, "playerCollect");
+        await bot.waitForTicks(10);
+        let itemEntity = bot.nearestEntity((entity) => {
+            return (entity.name === 'item' && entity.entityType === mcData.itemsByName[log.name].id);
+        });
+        // await bot.waitForTicks(10);
+        if (itemEntity) {
+            currentGoal = new GoalNear(itemEntity.position.x, itemEntity.position.y, itemEntity.position.z, 0);
+            await bot.pathfinder.goto(currentGoal);
+            await bot.waitForTicks(1);
+        }
+        // if we haven't already picked it up, wait a bit
+        while (countMulti(logItemIDs) < 1) {
+            console.log("Waiting for log pickup...");
+            await waitForPickup(mcData.itemsByName[log.name].id);
+        }
     }
-    // we should have a log now hehe
-    // attempt to craft each plank recipe and exit at the first successful one
-    let plankRecipe;
-    plankIDs.some(plank => {
-        let plankRecipes = bot.recipesFor(plank, null, 1, null);
-        if (plankRecipes.length > 0) {
-            plankRecipe = plankRecipes[0];
-            return true;
-        }
-    });
-    await bot.craft(plankRecipe);
-    // we should have >= 4 planks of some kind at this point
-    // after all this, we can attempt to craft a table
-    tableRecipes = bot.recipesFor(tableID, null, 1, null);
-    await bot.craft(tableRecipes[0]);
-    await bot.equip(mcData.itemsByName["crafting_table"].id)
-};
+    currentGoal = null;
+}
 
-// subscribe to an event and then return when it fires
-function getPromiseFromEvent(item, event) {
+// wait till the bot picks up an item
+function waitForPickup(itemID) {
     return new Promise((resolve) => {
-        const listener = () => {
-            item.removeListener(event, listener);
-            resolve();
+        const listener = (player, entity) => {
+            if (entity.name === 'item'
+                // && entity.entityType === itemID // not sure why this isn't working as expected
+                && player === bot.entity) {
+                bot.removeListener("playerCollect", listener);
+                resolve();
+            }
         }
-        item.on(event, listener);
+        bot.on("playerCollect", listener);
     })
 }
 
+// used for planks and logs, get the highest count of each type
+function countMulti(arrayIDs) {
+    let count = 0;
+    arrayIDs.forEach(id => {
+        count = Math.max(count, countInventory(mcData.items[id].name));
+    });
+    return count;
+}
 
 // check if bot has enough ingredients for any of the given recipes
 // recipesFor will return nothing if we don't have enough
