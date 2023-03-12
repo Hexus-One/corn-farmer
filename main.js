@@ -21,6 +21,7 @@ bot.loadPlugin(pathfinder);
 let defaultMove;
 let mcData; // gets loaded after bot joins server (version unknown)
 let currentGoal = null;
+let fakeTable = {id: 'minecraft:crafting_table'}
 
 bot.once('spawn', async () => {
     console.log("Joined server!");
@@ -66,14 +67,68 @@ bot.on('blockUpdate', async (oldBlock, newBlock) => {
     }
 })
 
-function checkInventory(itemName) {
+// returns number of matching items/blocks
+function countInventory(itemName) {
     let items = bot.inventory.items();
-    return items.filter(item => item.name === itemName).length;
-}
+    itemResult = items.filter(item => item.name === itemName);
+    return itemResult.reduce((subtotal, item) => subtotal + item.count, 0);
+};
 
 async function equipHoe() {
-    if (!checkInventory("wooden_hoe")) console.log("No hoes :c");
+    if (countInventory("wooden_hoe") < 1) await craftHoe();
     if (!bot.heldItem || bot.heldItem.name != "wooden_hoe") await bot.equip(mcData.itemsByName["wooden_hoe"].id);
+};
+
+// attempt to craft a hoe
+// assumes vanilla crafting recipes as of Java 1.19.3
+async function craftHoe(count = 1) {
+    let hoeID = mcData.itemsByName["wooden_hoe"].id;
+    let hoeRecipes = bot.recipesAll(hoeID, null, fakeTable);
+
+    // check we have sticks, planks and a table (and acquire them if we don't)
+    if (countInventory("crafting_table") < 1) await craftCraftingTable();
+    if (countInventory("sticks") < count * 2) await craftSticks();
+    if (countInventory("sticks") < count * 2) await craftSticks();
+	let stickID = mcData.itemsByName['stick'].id;
+    let stickRecipes = bot.recipesAll(stickID, null, null);
+
+    console.log(hoeRecipes);
+
+};
+
+async function craftCraftingTable() {
+    let tableID = mcData.itemsByName["crafting_table"].id;
+    tableRecipes = bot.recipesAll(tableID, null, null);
+    console.log(tableRecipes);
+
+    // get a list of planks needed
+    plankIDs = tableRecipes.reduce(function (plankArray, recipe) {
+        plankArray.push(recipe.delta[0].id);
+        return plankArray;
+    }, []);
+    console.log(plankIDs);
+    // check to see if we actually have any planks
+    let plankCount = 0;
+    plankIDs.forEach(id => {
+        plankCount = Math.max(plankCount, countInventory(mcData.items[id].name));
+    });
+    // otherwise attempt to craft/obtain each type of plank
+    if (plankCount < 4) {
+        // find the nearest log
+        // punch it
+        
+    }
+    // we should have >= 4 planks of some kind at this point
+    // after all this, we can attempt to craft a table
+    tableRecipes = bot.recipesFor(tableID, null, 1, null);
+    await bot.craft(tableRecipes[0]);
+    await bot.equip(mcData.itemsByName["crafting_table"].id)
+};
+
+// check if bot has enough ingredients for any of the given recipes
+// recipesFor will return nothing if we don't have enough
+// so this isn't needed lol
+function hasIngredientsForAny(recipe, craftingTable) {
 };
 
 /* 
