@@ -1,6 +1,10 @@
+// by Corns McGowan
+// This bot tries to make a wheat farm and expand it nonstop
+
 const mineflayer = require('mineflayer');
 const { mineflayer: mineflayerViewer } = require('prismarine-viewer');
 const { pathfinder, Movements, goals: { GoalNear, GoalNearXZ, GoalPlaceBlock, GoalLookAtBlock } } = require('mineflayer-pathfinder');
+
 const vec3 = require('vec3');
 
 const RANGE_GOAL = 1; // get within this radius of the player
@@ -12,11 +16,33 @@ const bot = mineflayer.createBot({
     password: process.argv[5]
 });
 
+bot.loadPlugin(require('mineflayer-collectblock').plugin);
+bot.loadPlugin(pathfinder);
+
 bot.on('kicked', (reason, loggedIn) => console.log(reason, loggedIn));
 bot.on('end', (reason) => console.log(reason));
 bot.on('error', err => console.log(err));
 
-bot.loadPlugin(pathfinder);
+// spots to check when analysing tree blocks
+// i have no clue if its vec3 or vec3.Vec3
+const TREE_ADJACENT = [
+    vec3(0, -1, 0),
+    vec3(-1, -1, 0),
+    vec3(1, -1, 0),
+    vec3(0, -1, -1),
+    vec3(0, -1, 1),
+
+    vec3(-1, 0, 0),
+    vec3(1, 0, 0),
+    vec3(0, 0, -1),
+    vec3(0, 0, 1),
+
+    vec3(0, 1, 0),
+    vec3(-1, 1, 0),
+    vec3(1, 1, 0),
+    vec3(0, 1, -1),
+    vec3(0, 1, 1),
+];
 
 // please forgive this mess of fields
 let defaultMove;
@@ -39,6 +65,7 @@ bot.once('spawn', async () => {
     delicateMove.canDig = false;
     delicateMove.placeCost = 9999;
 
+    // generate tables
     tableID = mcData.itemsByName["crafting_table"].id;
     tableRecipes = bot.recipesAll(tableID, null, null);
     plankIDs = tableRecipes.reduce((plankArray, recipe) => {
@@ -58,19 +85,30 @@ bot.once('spawn', async () => {
 bot.on('chat', async (username, message) => {
     console.log("chat", username, message);
     if (username === bot.username) return; // i.e. ignore own messages
-    if (message !== "cmere") return;
-    const target = bot.players[username]?.entity;
-    if (!target) {
-        console.log("Target not found :c");
-        return;
+    switch (message) {
+        case "cmere":
+            const target = bot.players[username]?.entity;
+            if (!target) {
+                console.log("Target not found :c");
+                return;
+            }
+            const { x: playerX, y: playerY, z: playerZ } = target.position;
+            bot.pathfinder.setMovements(delicateMove);
+            bot.pathfinder.goto(new GoalNear(playerX, playerY, playerZ, RANGE_GOAL));
+            break
+        case "log":
+            await getLog();
+            break;
     }
-    const { x: playerX, y: playerY, z: playerZ } = target.position;
-    bot.pathfinder.setMovements(delicateMove);
-    bot.pathfinder.goto(new GoalNear(playerX, playerY, playerZ, RANGE_GOAL));
 })
 
 bot.on('whisper', async (username, message) => {
     console.log("whisper", username, message);
+});
+
+bot.on('itemDrop', async (entity) => {
+    if (mcData == null || entity.name !== "item") return;
+    console.log("itemdrop", mcData.items[entity.metadata["8"].itemId].name);
 });
 
 bot.on('blockUpdate', async (oldBlock, newBlock) => {
@@ -85,11 +123,12 @@ bot.on('blockUpdate', async (oldBlock, newBlock) => {
         currentGoal = new GoalNear(dirt.x, dirt.y + 1, dirt.z, RANGE_GOAL);
         await equipHoe(); // maybe this should happen at the start
         bot.pathfinder.setMovements(delicateMove);
-        await bot.pathfinder.goto(currentGoal);
+        await bot.pathfinder.goto(currentGoal).catch(console.log);
         await bot.lookAt(dirt, true);
         await bot.activateBlock(bot.blockAt(dirt)); // till the dirt
         currentGoal = null;
     }
+    //*/
 })
 
 // returns number of matching items/blocks
@@ -117,6 +156,17 @@ async function craftHoe(count = 1) {
     await craftWithTable(hoeRecipes[0]);
 };
 
+async function craftAxe(count = 1) {
+    let axeID = mcData.itemsByName["wooden_axe"].id;
+    // check we have sticks, planks and a table (and acquire them if we don't)
+    await getCraftingTable();
+    await getSticks(3);
+    await getPlanks(2);
+    let axeRecipes = bot.recipesFor(axeID, null, 1, fakeTable);
+    console.log(axeRecipes);
+    await craftWithTable(axeRecipes[0]);
+};
+
 // crafting something using a crafting table
 async function craftWithTable(recipe, count = 1) {
     airIDs = [mcData.blocksByName["air"].id, mcData.blocksByName["cave_air"].id];
@@ -131,39 +181,31 @@ async function craftWithTable(recipe, count = 1) {
     });
 
     let craftingSpot;
-
     for (position of solidBlocks) {
         let block = bot.blockAt(position);
         let topBlock = bot.blockAt(block.position.offset(0, 1, 0));
-
         if (topBlock.type !== airIDs[0] && topBlock.type !== airIDs[1]) continue;
         if (bot.entity.position.xzDistanceTo(position) <= 2) continue;
-
         craftingSpot = block;
         break;
     }
-
     // Place the crafting table.
     if (!craftingSpot) console.log("Couldn't find somewhere to put the crafting table.");
-
-    let tablePosition = craftingSpot.position;
-
+        let tablePosition = craftingSpot.position;
     await bot.equip(tableID);
-    currentGoal = new GoalLookAtBlock(tablePosition, bot.world);
-    await bot.pathfinder.goto(currentGoal);
+    currentGoal = new GoalNearXZ(tablePosition.x, tablePosition.z, RANGE_GOAL);
+    await bot.pathfinder.goto(currentGoal).catch(console.log);
     await bot.placeBlock(craftingSpot, { x: 0, y: 1, z: 0 }).catch(console.log);
-
     console.log("Placed the table! (maybe)");
-
     await bot.waitForTicks(1);
-
     let table = bot.findBlock({
-		matching: (block)=>{
-			return block.name === "crafting_table";
-		},
-		maxDistance: 4,
-	});
+        matching: (block) => {
+            return block.name === "crafting_table";
+        },
+        maxDistance: 4,
+    });
     await bot.craft(recipe, count, table);
+    await bot.collectBlock.collect(table);
     currentGoal = null;
 }
 
@@ -213,17 +255,46 @@ async function getPlanks(count) {
 }
 
 // acquire log
-async function getLog(count) {
+// but basically we're gonna try cut down the whole tree
+// otherwise it looks messy
+async function getLog(count = 1) {
     while (countMulti(logItemIDs) < count) {
-        let logs = bot.findBlocks({
+        let logSearch = bot.findBlocks({
             matching: logBlockIDs,
-            maxDistance: 16
+            maxDistance: 64
+            // count: 1 // default
         })
-        if (logs.length < 1) {
+        if (logSearch.length < 1) {
             console.log("No logs found");
-            return;
+            return "No logs found";
         }
-        let log = bot.blockAt(logs[0]);
+        // recursively check for adjacent logs, comprising a tree
+        // then chop the big boi
+        let toChop = [];
+        let discard = [];
+        while (logSearch.length > 0) {
+            let candidatePos = logSearch.pop();
+            let candidateBlock = bot.blockAt(candidatePos);
+            if (logBlockIDs.includes(candidateBlock.type)) {
+                toChop.push(candidatePos);
+                TREE_ADJACENT.forEach(elem => {
+                    let adjacent = candidatePos.offset(elem.x, elem.y, elem.z);
+                    if (!hasPosition(logSearch, adjacent)
+                        && !hasPosition(discard, adjacent)
+                        && !hasPosition(toChop, adjacent)) {
+                        logSearch.push(adjacent);
+                    }
+                });
+            } else {
+                discard.push(candidatePos);
+            }
+        }
+        let toChopBlocks = []
+        toChop.forEach(position => {
+            toChopBlocks.push(bot.blockAt(position));
+        });
+        await bot.collectBlock.collect(toChopBlocks).catch(console.log); // replaces everything below omg
+        /* 
         // unsure if GoalNear or GoalLookAtBlock is better
         bot.pathfinder.setMovements(defaultMove);
         currentGoal = new GoalNearXZ(logs[0].x, logs[0].z, RANGE_GOAL);
@@ -247,9 +318,9 @@ async function getLog(count) {
         while (countMulti(logItemIDs) < 1) {
             console.log("Waiting for log pickup...");
             await waitForPickup(mcData.itemsByName[log.name].id);
-        }
+        } 
+        //*/
     }
-    currentGoal = null;
 }
 
 // wait till the bot picks up an item
@@ -274,6 +345,11 @@ function countMulti(arrayIDs) {
         count = Math.max(count, countInventory(mcData.items[id].name));
     });
     return count;
+}
+
+// see if a vec3 of 
+function hasPosition(array, test) {
+    return array.some((element) => element.equals(test));
 }
 
 // check if bot has enough ingredients for any of the given recipes
