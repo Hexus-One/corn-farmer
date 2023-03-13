@@ -85,7 +85,8 @@ bot.once('spawn', async () => {
 bot.on('chat', async (username, message) => {
     console.log("chat", username, message);
     if (username === bot.username) return; // i.e. ignore own messages
-    switch (message) {
+    const ARGS = message.split(' ');
+    switch (ARGS[0]) {
         case "cmere":
             const target = bot.players[username]?.entity;
             if (!target) {
@@ -98,6 +99,13 @@ bot.on('chat', async (username, message) => {
             break
         case "log":
             await getLog();
+            break;
+        case "collect":
+            let count = 1;
+            if (ARGS.length === 3) count = parseInt(ARGS[1]);
+            let type = ARGS[1];
+            if (ARGS.length === 3) type = ARGS[2];
+            testCollect(type, count);
             break;
     }
 })
@@ -116,6 +124,7 @@ bot.on('blockUpdate', async (oldBlock, newBlock) => {
     // replace trampled/decayed farmland if we encounter any
     // bot moves so it can view the top of the farmland to also replace crops
     // todo: maybe distinguish between player-trampled farmland and decaying farmland further away?
+    /*
     if (currentGoal == null
         && oldBlock.name === "farmland" && newBlock.name === "dirt") {
         console.log("Farmland decayed/trampled :c");
@@ -160,8 +169,8 @@ async function craftAxe(count = 1) {
     let axeID = mcData.itemsByName["wooden_axe"].id;
     // check we have sticks, planks and a table (and acquire them if we don't)
     await getCraftingTable();
-    await getSticks(3);
-    await getPlanks(2);
+    await getSticks(2);
+    await getPlanks(3);
     let axeRecipes = bot.recipesFor(axeID, null, 1, fakeTable);
     console.log(axeRecipes);
     await craftWithTable(axeRecipes[0]);
@@ -191,9 +200,9 @@ async function craftWithTable(recipe, count = 1) {
     }
     // Place the crafting table.
     if (!craftingSpot) console.log("Couldn't find somewhere to put the crafting table.");
-        let tablePosition = craftingSpot.position;
+    let tablePosition = craftingSpot.position;
     await bot.equip(tableID);
-    currentGoal = new GoalNearXZ(tablePosition.x, tablePosition.z, RANGE_GOAL);
+    currentGoal = new GoalNearXZ(tablePosition.x, tablePosition.z, 2);
     await bot.pathfinder.goto(currentGoal).catch(console.log);
     await bot.placeBlock(craftingSpot, { x: 0, y: 1, z: 0 }).catch(console.log);
     console.log("Placed the table! (maybe)");
@@ -289,37 +298,11 @@ async function getLog(count = 1) {
                 discard.push(candidatePos);
             }
         }
-        let toChopBlocks = []
-        toChop.forEach(position => {
-            toChopBlocks.push(bot.blockAt(position));
-        });
-        await bot.collectBlock.collect(toChopBlocks).catch(console.log); // replaces everything below omg
-        /* 
-        // unsure if GoalNear or GoalLookAtBlock is better
-        bot.pathfinder.setMovements(defaultMove);
-        currentGoal = new GoalNearXZ(logs[0].x, logs[0].z, RANGE_GOAL);
-        await bot.pathfinder.goto(currentGoal).catch(console.log);
-        await bot.lookAt(logs[0]);
-        bot.setControlState('forward', true); // shuffle forwards a bit
-        await bot.waitForTicks(3);
-        bot.setControlState('forward', false);
-        await bot.dig(log);
-        await bot.waitForTicks(10);
-        let itemEntity = bot.nearestEntity((entity) => {
-            return (entity.name === 'item' && entity.entityType === mcData.itemsByName[log.name].id);
-        });
-        // await bot.waitForTicks(10);
-        if (itemEntity) {
-            currentGoal = new GoalNear(itemEntity.position.x, itemEntity.position.y, itemEntity.position.z, 0);
-            await bot.pathfinder.goto(currentGoal);
-            await bot.waitForTicks(1);
+        toChop.sort((a, b) => a.y < b.y);
+        for (let i = 0; i < toChop.length; i++) {
+            await bot.collectBlock.collect(bot.blockAt(toChop[i])).catch(console.log); // replaces everything below omg
         }
-        // if we haven't already picked it up, wait a bit
-        while (countMulti(logItemIDs) < 1) {
-            console.log("Waiting for log pickup...");
-            await waitForPickup(mcData.itemsByName[log.name].id);
-        } 
-        //*/
+        while (countInventory("wooden_axe") < 2) await craftAxe();
     }
 }
 
@@ -350,6 +333,41 @@ function countMulti(arrayIDs) {
 // see if a vec3 of 
 function hasPosition(array, test) {
     return array.some((element) => element.equals(test));
+}
+
+async function testCollect(type, count = 1) {
+    const blockType = mcData.blocksByName[type]
+    if (!blockType) {
+        return
+    }
+
+    const blocks = bot.findBlocks({
+        matching: blockType.id,
+        maxDistance: 64,
+        count: count
+    })
+
+    if (blocks.length === 0) {
+        bot.chat("I don't see that block nearby.")
+        return
+    }
+
+    const targets = []
+    for (let i = 0; i < Math.min(blocks.length, count); i++) {
+        targets.push(bot.blockAt(blocks[i]))
+    }
+
+    bot.chat(`Found ${targets.length} ${type}(s)`)
+
+    try {
+        await bot.collectBlock.collect(targets)
+        // All blocks have been collected.
+        bot.chat('Done')
+    } catch (err) {
+        // An error occurred, report it.
+        bot.chat(err.message)
+        console.log(err)
+    }
 }
 
 // check if bot has enough ingredients for any of the given recipes
