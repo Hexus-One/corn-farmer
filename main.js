@@ -95,7 +95,7 @@ bot.on('chat', async (username, message) => {
             }
             const { x: playerX, y: playerY, z: playerZ } = target.position;
             bot.pathfinder.setMovements(delicateMove);
-            bot.pathfinder.goto(new GoalNear(playerX, playerY, playerZ, RANGE_GOAL));
+            await bot.pathfinder.goto(new GoalNear(playerX, playerY, playerZ, RANGE_GOAL)).catch(console.log);
             break
         case "log":
             await getLog();
@@ -105,7 +105,7 @@ bot.on('chat', async (username, message) => {
             if (ARGS.length === 3) count = parseInt(ARGS[1]);
             let type = ARGS[1];
             if (ARGS.length === 3) type = ARGS[2];
-            testCollect(type, count);
+            await testCollect(type, count);
             break;
     }
 })
@@ -300,6 +300,8 @@ async function getLog(count = 1) {
         }
         toChop.sort((a, b) => a.y < b.y);
         for (let i = 0; i < toChop.length; i++) {
+            // just in case the server has treecapitator
+            if (!logBlockIDs.includes(bot.blockAt(toChop[i]).type)) continue;
             await bot.collectBlock.collect(bot.blockAt(toChop[i])).catch(console.log); // replaces everything below omg
         }
         while (countInventory("wooden_axe") < 2) await craftAxe();
