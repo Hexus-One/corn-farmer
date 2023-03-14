@@ -77,6 +77,9 @@ bot.once('spawn', async () => {
   delicateMove = new Movements(bot);
   delicateMove.canDig = false;
   delicateMove.placeCost = 9999;
+  delicateMove.maxDropDown = 1;
+  delicateMove.allowParkour = false;
+  delicateMove.allowSprinting = false;
 
   // generate tables
   tableID = mcData.itemsByName["crafting_table"].id;
@@ -139,7 +142,10 @@ bot.on('chat', async (username, message) => {
       await hoeAndSow(trampled);
       break;
     case 'expand':
-      await hoeAndSow(getFarmNeighbours(farm));
+      await hoeAndSow(getFarmNeighbours(farm, 400));
+      break;
+    case 'mainloop':
+      await mainLoop();
       break;
   }
 })
@@ -175,6 +181,20 @@ bot.on('blockUpdate', async (oldBlock, newBlock) => {
     }
 })
 //*/
+
+async function mainLoop() {
+  if (farm.length == 0) farm = detectFarm();
+  while (true) {
+    await hoeAndSow(checkDecay(farm));
+    let neighbours = getFarmNeighbours(farm, 400);
+    console.log(neighbours.length, "neighbours found");
+    await hoeAndSow(neighbours);
+    // no crops available to harvest, wait a little
+    if (await harvest() == 0) {
+      await bot.waitForTicks(200);
+    }
+  }
+}
 
 // till and plant the given blocks
 async function hoeAndSow(tiles) {
@@ -223,6 +243,7 @@ async function hoeAndSow(tiles) {
     if (grassIDs.includes(above.type)) {
       await bot.unequip('hand');
       await bot.dig(above, true).catch(console.log);
+      await bot.waitForTicks(1);
       await equipHoe();
       bot.pathfinder.setMovements(delicateMove);
     }
@@ -236,7 +257,8 @@ async function hoeAndSow(tiles) {
     await bot.equip(seedID);
     await bot.activateBlock(dirt).catch(console.log);
     tiles[indexToRemove] = tiles[tiles.length - 1];
-    tiles.pop();
+    let tile = tiles.pop();
+    if (hasPosition(farm, tile)) farm.push(tile); // add it back to the farm
   }
 }
 
@@ -273,7 +295,8 @@ function detectFarm() {
 
 // check neighbours of existing farmland tiles for candidates
 // returns tiles suitable for farming
-function getFarmNeighbours(farmland) {
+// max is max tiles to search before stopping (can return slightly larger)
+function getFarmNeighbours(farmland, max) {
   const farmlandID = mcData.blocksByName['farmland'].id;
   const tillableIDs = [
     mcData.blocksByName['dirt'].id,
@@ -291,6 +314,7 @@ function getFarmNeighbours(farmland) {
   let candidates = [];
   // one loop to check neighbours of farm tiles
   for (let i = 0; i < farmland.length; i++) {
+    if (candidates.length > max) return candidates;;
     const position = farmland[i];
     CARDINAL.forEach(direction => {
       let newPos = position.offset(...direction);
@@ -307,7 +331,24 @@ function getFarmNeighbours(farmland) {
     });
   }
   // another loop to check neighbours of neighbours (maybe)
-  console.log(candidates.length)
+  for (let i = 0; i < candidates.length; i++) {
+    if (candidates.length > max) return candidates;;
+    const position = candidates[i];
+    CARDINAL.forEach(direction => {
+      let newPos = position.offset(...direction);
+      let newPosBlock = bot.blockAt(newPos);
+      let blockAbove = bot.blockAt(newPos.offset(0, 1, 0));
+      // tl;dr needs to be dirt with air/grass above, and not already in list
+      if (newPosBlock === null) return candidates;;
+      if ((tillableIDs.includes(newPosBlock.type))
+        && (airIDs.includes(blockAbove.type)
+          || grassIDs.includes(blockAbove.type))
+        && (!hasPosition(farmland, newPos))
+        && (!hasPosition(candidates, newPos))) {
+        candidates.push(newPos);
+      }
+    });
+  }
   return candidates;
 }
 
@@ -363,6 +404,7 @@ async function harvest(count = 1) {
     console.log("Out of seeds!");
     return;
   }
+  let harvested = 0;
   for (let i = 0; i < count; i++) {
     const wheatID = mcData.blocksByName['wheat'].id;
     const seedID = mcData.itemsByName['wheat_seeds'].id;
@@ -385,7 +427,9 @@ async function harvest(count = 1) {
     await bot.dig(wheat, true);
     await bot.activateBlock(bot.blockAt(target[0].offset(0, -1, 0)));
     await waitForPickup(seedID);
+    harvested++;
   }
+  return harvested;
 }
 
 // returns number of matching items/blocks
