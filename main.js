@@ -66,6 +66,8 @@ let tableRecipes;
 let plankIDs = [];
 let logItemIDs = [];
 let logBlockIDs = [];
+let farm = [];
+let trampled = [];
 
 bot.once('spawn', async () => {
   console.log("Joined server!");
@@ -88,7 +90,8 @@ bot.once('spawn', async () => {
     bot.recipesAll(plank, null, null).forEach(logRecipe => {
       logItemIDs.push(logRecipe.delta[0].id);
       // convert itemID to blockID
-      logBlockIDs.push(mcData.blocksByName[mcData.items[logRecipe.delta[0].id].name].id);
+      logBlockIDs.push(
+        mcData.blocksByName[mcData.items[logRecipe.delta[0].id].name].id);
     });
   });
 });
@@ -107,7 +110,8 @@ bot.on('chat', async (username, message) => {
       }
       const { x: playerX, y: playerY, z: playerZ } = target.position;
       bot.pathfinder.setMovements(delicateMove);
-      await bot.pathfinder.goto(new GoalNear(playerX, playerY, playerZ, RANGE_GOAL))
+      await bot.pathfinder.goto(
+        new GoalNear(playerX, playerY, playerZ, RANGE_GOAL))
         .catch(console.log);
       break
     case "log":
@@ -126,9 +130,13 @@ bot.on('chat', async (username, message) => {
       await harvest(count);
       break;
     case 'detect':
-      console.time('detectFarm');
-      await detectFarm();
-      console.timeEnd('detectFarm');
+      farm = await detectFarm();
+      break;
+    case 'decay':
+      trampled = await checkDecay(farm);
+      break;
+    case 'fix':
+      await hoeAndSow(trampled);
       break;
   }
 })
@@ -165,9 +173,56 @@ bot.on('blockUpdate', async (oldBlock, newBlock) => {
 })
 //*/
 
+// till and plant the given blocks
+async function hoeAndSow(tiles) {
+  const seedID = mcData.itemsByName['wheat_seeds'].id;
+  const farmlandID = mcData.blocksByName['farmland'].id;
+
+  if (countInventory('wheat_seeds') < tiles.length) {
+    console.log("Not enough seeds! Have", countInventory('wheat_seeds'),
+      "need", tiles.length);
+    return;
+  }
+  while (tiles.length > 0) {
+    // find the closest tile while retaining the index
+    // so we can remove it later
+    let indexToRemove;
+    let position = tiles.reduce((best, item, index) => {
+      if (!best) {
+        indexToRemove = index;
+        return item;
+      }
+      if (item.distanceTo(bot.entity.position)
+        < best.distanceTo(bot.entity.position)) {
+        indexToRemove = index;
+        return item;
+      } else {
+        return best;
+      }
+    }, null);
+    bot.pathfinder.setMovements(defaultMove);
+    await equipHoe();
+    bot.pathfinder.setMovements(delicateMove);
+    await bot.pathfinder.goto(
+      new GoalNear(position.x, position.y + 1, position.z, RANGE_GOAL))
+      .catch(console.log);
+    // last min check if its still farmland
+    let dirt = bot.blockAt(position);
+    // a bit faster than waiting for activateBlock
+    await bot.lookAt(position.offset(0, 0.5, 0), true);
+    if (dirt.type != farmlandID) {
+      await bot.activateBlock(dirt);
+    }
+    await bot.equip(seedID);
+    await bot.activateBlock(dirt).catch(console.log);
+    tiles[indexToRemove] = tiles[tiles.length - 1];
+    tiles.pop();
+  }
+}
+
 // get all contiguous farmland blocks
 async function detectFarm() {
-  let farmlandID = mcData.blocksByName['farmland'].id;
+  const farmlandID = mcData.blocksByName['farmland'].id;
   let farmland = bot.findBlocks({
     matching: farmlandID,
     maxDistance: 4,
@@ -185,7 +240,7 @@ async function detectFarm() {
       for (let j = 0; j < Y_OFFSET.length; j++) {
         const y = Y_OFFSET[j];
         let newPos = position.offset(direction[0], y, direction[2]);
-        if (bot.blockAt(newPos).type !== farmlandID) continue;
+        if (bot.blockAt(newPos).type != farmlandID) continue;
         if (hasPosition(farmland, newPos)) continue;
         farmland.push(newPos);
         break;
@@ -196,13 +251,54 @@ async function detectFarm() {
   return farmland;
 }
 
+// check all farmland blocks and see if any have changed
+// eg trampled (reverted to dirt/grass and has air above)
+// otherwise remove it from the farmland list (eg removed or block on top)
+// return trampled blocks (salvageable)
+// also includes farmland without wheat (it will likely decay later)
+async function checkDecay(farmland) {
+  const farmlandID = mcData.blocksByName['farmland'].id;
+  const tillableIDs = [
+    mcData.blocksByName['dirt'].id,
+    mcData.blocksByName['grass_block'].id
+  ];
+  const airIDs = [
+    mcData.blocksByName['air'].id,
+    mcData.blocksByName['cave_air'].id,
+  ];
+  let trampled = [];
+  let i = 0;
+  while (i < farmland.length) {
+    if (bot.blockAt(farmland[i]).type == farmlandID) {
+      if (airIDs.includes(bot.blockAt(farmland[i].offset(0, 1, 0)).type)) {
+        trampled.push(farmland[i]);
+      }
+      i++;
+    } else if (tillableIDs.includes(bot.blockAt(farmland[i]).type)
+      && airIDs.includes(bot.blockAt(farmland[i].offset(0, 1, 0)).type)) {
+      // tillable with air above; salvageable
+      trampled.push(farmland[i]);
+      i++;
+    } else { // can't save it, remove from farmland list
+      // also don't increment i because of
+      // the way we remove the item from the list
+      farmland[i] = farmland[farmland.length - 1];
+      farmland.pop();
+    }
+  }
+  console.log("Found", trampled.length, "trampled tiles");
+  return trampled;
+}
+
 // attempt to harvest (and replant) this many wheat blocks
 // cancel if we can't find wheat
 // or don't have any seeds to start (for instant replant)
+// TODO: maybe change this to only harvest known farmland?
 async function harvest(count = 1) {
+  bot.pathfinder.setMovements(delicateMove);
   for (let i = 0; i < count; i++) {
-    let wheatID = mcData.blocksByName['wheat'].id;
-    let seedID = mcData.itemsByName['wheat_seeds'].id;
+    const wheatID = mcData.blocksByName['wheat'].id;
+    const seedID = mcData.itemsByName['wheat_seeds'].id;
     let target = bot.findBlocks({
       matching: (block) => {
         return block.type === wheatID && block.metadata === 7;
@@ -221,7 +317,8 @@ async function harvest(count = 1) {
       return;
     }
     await bot.equip(seedID);
-    await bot.pathfinder.goto(new GoalBlock(target[0].x, target[0].y, target[0].z));
+    await bot.pathfinder.goto(
+      new GoalBlock(target[0].x, target[0].y, target[0].z));
     let wheat = bot.blockAt(target[0]);
     // small chance we trampled the block we're about to harvest
     if (wheat.type != wheatID) continue;
@@ -248,7 +345,7 @@ async function equipHoe() {
 // attempt to craft a hoe
 // assumes vanilla crafting recipes as of Java 1.19.3
 async function craftHoe(count = 1) {
-  let hoeID = mcData.itemsByName["wooden_hoe"].id;
+  const hoeID = mcData.itemsByName["wooden_hoe"].id;
   // check we have sticks, planks and a table (and acquire them if we don't)
   await getCraftingTable();
   await getSticks(2);
@@ -259,7 +356,7 @@ async function craftHoe(count = 1) {
 };
 
 async function craftAxe(count = 1) {
-  let axeID = mcData.itemsByName["wooden_axe"].id;
+  const axeID = mcData.itemsByName["wooden_axe"].id;
   // check we have sticks, planks and a table (and acquire them if we don't)
   await getCraftingTable();
   await getSticks(2);
@@ -271,7 +368,10 @@ async function craftAxe(count = 1) {
 
 // crafting something using a crafting table
 async function craftWithTable(recipe, count = 1) {
-  airIDs = [mcData.blocksByName["air"].id, mcData.blocksByName["cave_air"].id];
+  const airIDs = [
+    mcData.blocksByName["air"].id,
+    mcData.blocksByName["cave_air"].id
+  ];
   getCraftingTable();
   // Find somewhere to put the crafting table.
   let solidBlocks = bot.findBlocks({
@@ -332,7 +432,7 @@ async function getCraftingTable(count = 1) {
 
 // acquire sticks
 async function getSticks(count) {
-  let stickID = mcData.itemsByName['stick'].id;
+  const stickID = mcData.itemsByName['stick'].id;
   while (countInventory("stick") < count) {
     await getPlanks(2);
     let stickRecipes = bot.recipesFor(stickID, null, 1, null);
@@ -397,7 +497,8 @@ async function getLog(count = 1) {
     for (let i = 0; i < toChop.length; i++) {
       // just in case the server has treecapitator
       if (!logBlockIDs.includes(bot.blockAt(toChop[i]).type)) continue;
-      await bot.collectBlock.collect(bot.blockAt(toChop[i])).catch(console.log); // replaces everything below omg
+      await bot.collectBlock.collect(bot.blockAt(toChop[i]))
+        .catch(console.log);
     }
     while (countInventory("wooden_axe") < 2) await craftAxe();
   }
@@ -409,8 +510,8 @@ function waitForPickup(itemID = null) {
     const listener = (player, entity) => {
       if (player === bot.entity
         && entity.name === 'item'
-        && (itemID == null || entity.metadata["8"].itemId === itemID)) {
-        console.log(entity);
+        && (itemID == null || entity.metadata["8"].itemId == itemID)) {
+        // console.log(entity);
         bot.removeListener("playerCollect", listener);
         resolve();
       }
