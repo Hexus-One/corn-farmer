@@ -338,37 +338,37 @@ function hasPosition(array, test) {
 }
 
 async function testCollect(type, count = 1) {
-    const blockType = mcData.blocksByName[type]
+    const blockType = mcData.blocksByName[type];
     if (!blockType) {
-        return
+        return;
     }
 
     const blocks = bot.findBlocks({
         matching: blockType.id,
         maxDistance: 64,
         count: count
-    })
+    });
 
     if (blocks.length === 0) {
-        bot.chat("I don't see that block nearby.")
-        return
+        console.log("I don't see that block nearby.");
+        return;
     }
 
-    const targets = []
+    const targets = [];
     for (let i = 0; i < Math.min(blocks.length, count); i++) {
-        targets.push(bot.blockAt(blocks[i]))
+        targets.push(bot.blockAt(blocks[i]));
     }
 
-    bot.chat(`Found ${targets.length} ${type}(s)`)
+    console.log("Found ${targets.length} ${type}(s)");
 
     try {
-        await bot.collectBlock.collect(targets)
+        await bot.collectBlock.collect(targets);
         // All blocks have been collected.
-        bot.chat('Done')
+        console.log('Done');
     } catch (err) {
         // An error occurred, report it.
-        bot.chat(err.message)
-        console.log(err)
+        console.log(err.message);
+        console.log(err);
     }
 }
 
