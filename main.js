@@ -130,13 +130,16 @@ bot.on('chat', async (username, message) => {
       await harvest(count);
       break;
     case 'detect':
-      farm = await detectFarm();
+      farm = detectFarm();
       break;
     case 'decay':
-      trampled = await checkDecay(farm);
+      trampled = checkDecay(farm);
       break;
     case 'fix':
       await hoeAndSow(trampled);
+      break;
+    case 'expand':
+      await hoeAndSow(getFarmNeighbours(farm));
       break;
   }
 })
@@ -177,15 +180,25 @@ bot.on('blockUpdate', async (oldBlock, newBlock) => {
 async function hoeAndSow(tiles) {
   const seedID = mcData.itemsByName['wheat_seeds'].id;
   const farmlandID = mcData.blocksByName['farmland'].id;
+  const grassIDs = [ // maybe add flowers too
+    mcData.blocksByName['grass'].id,
+    mcData.blocksByName['tall_grass'].id
+  ];
 
-  if (countInventory('wheat_seeds') < tiles.length) {
-    console.log("Not enough seeds! Have", countInventory('wheat_seeds'),
-      "need", tiles.length);
-    return;
-  }
   while (tiles.length > 0) {
+    if (countInventory('wheat_seeds') < 32) {
+      console.log("Fetching more seeds...");
+      await harvest(64);
+      if (countInventory('wheat_seeds') < 32) { // i.e. we obtained 0 seeds
+        console.log("Not enough seeds to continue! Aborting...");
+        return; // too scared to use actual throw/try/catch
+      }
+    }
     // find the closest tile while retaining the index
     // so we can remove it later
+    // reduce is O(n) time and we perform it n times
+    // sort would be O(nlogn) but our "closest" position changes frequently
+    // so we'd have to redo it every time for O(n2logn) which is worse
     let indexToRemove;
     let position = tiles.reduce((best, item, index) => {
       if (!best) {
@@ -200,16 +213,23 @@ async function hoeAndSow(tiles) {
         return best;
       }
     }, null);
-    bot.pathfinder.setMovements(defaultMove);
     await equipHoe();
     bot.pathfinder.setMovements(delicateMove);
     await bot.pathfinder.goto(
       new GoalNear(position.x, position.y + 1, position.z, RANGE_GOAL))
       .catch(console.log);
-    // last min check if its still farmland
-    let dirt = bot.blockAt(position);
+    // destroy any grass that might be on top
+    let above = bot.blockAt(position.offset(0, 1, 0));
+    if (grassIDs.includes(above.type)) {
+      await bot.unequip('hand');
+      await bot.dig(above, true).catch(console.log);
+      await equipHoe();
+      bot.pathfinder.setMovements(delicateMove);
+    }
     // a bit faster than waiting for activateBlock
     await bot.lookAt(position.offset(0, 0.5, 0), true);
+    // till if its not farmland
+    let dirt = bot.blockAt(position);
     if (dirt.type != farmlandID) {
       await bot.activateBlock(dirt);
     }
@@ -221,7 +241,7 @@ async function hoeAndSow(tiles) {
 }
 
 // get all contiguous farmland blocks
-async function detectFarm() {
+function detectFarm() {
   const farmlandID = mcData.blocksByName['farmland'].id;
   let farmland = bot.findBlocks({
     matching: farmlandID,
@@ -251,12 +271,52 @@ async function detectFarm() {
   return farmland;
 }
 
+// check neighbours of existing farmland tiles for candidates
+// returns tiles suitable for farming
+function getFarmNeighbours(farmland) {
+  const farmlandID = mcData.blocksByName['farmland'].id;
+  const tillableIDs = [
+    mcData.blocksByName['dirt'].id,
+    mcData.blocksByName['grass_block'].id
+  ];
+  const airIDs = [
+    mcData.blocksByName['air'].id,
+    mcData.blocksByName['cave_air'].id,
+  ];
+  const grassIDs = [ // maybe add flowers too
+    mcData.blocksByName['grass'].id,
+    mcData.blocksByName['tall_grass'].id
+  ];
+  let oldSize = farmland.length;
+  let candidates = [];
+  // one loop to check neighbours of farm tiles
+  for (let i = 0; i < farmland.length; i++) {
+    const position = farmland[i];
+    CARDINAL.forEach(direction => {
+      let newPos = position.offset(...direction);
+      let newPosBlock = bot.blockAt(newPos);
+      let blockAbove = bot.blockAt(newPos.offset(0, 1, 0));
+      // tl;dr needs to be dirt with air/grass above, and not already in list
+      if ((tillableIDs.includes(newPosBlock.type))
+        && (airIDs.includes(blockAbove.type)
+          || grassIDs.includes(blockAbove.type))
+        && (!hasPosition(farmland, newPos))
+        && (!hasPosition(candidates, newPos))) {
+        candidates.push(newPos);
+      }
+    });
+  }
+  // another loop to check neighbours of neighbours (maybe)
+  console.log(candidates.length)
+  return candidates;
+}
+
 // check all farmland blocks and see if any have changed
 // eg trampled (reverted to dirt/grass and has air above)
 // otherwise remove it from the farmland list (eg removed or block on top)
 // return trampled blocks (salvageable)
 // also includes farmland without wheat (it will likely decay later)
-async function checkDecay(farmland) {
+function checkDecay(farmland) {
   const farmlandID = mcData.blocksByName['farmland'].id;
   const tillableIDs = [
     mcData.blocksByName['dirt'].id,
@@ -296,6 +356,13 @@ async function checkDecay(farmland) {
 // TODO: maybe change this to only harvest known farmland?
 async function harvest(count = 1) {
   bot.pathfinder.setMovements(delicateMove);
+  // even though we usually get more seeds than we sow,
+  // its nice to have seeds to start with so we can instant replant
+  // in case the farmland is dry - don't want to risk it decaying in one tick
+  if (countInventory('wheat_seeds') == 0) {
+    console.log("Out of seeds!");
+    return;
+  }
   for (let i = 0; i < count; i++) {
     const wheatID = mcData.blocksByName['wheat'].id;
     const seedID = mcData.itemsByName['wheat_seeds'].id;
@@ -306,16 +373,9 @@ async function harvest(count = 1) {
       maxDistance: 64
     });
     if (target.length == 0) {
-      console.log("No wheat found!");
-      return;
+      console.log("Ran out of wheat to harvest!");
+      break;
     };
-    // even though we usually get more seeds than we sow,
-    // its nice to have seeds to start with so we can instant replant
-    // in case the farmland is dry - don't want to risk it decaying in one tick
-    if (countInventory('wheat_seeds') == 0) {
-      console.log("Out of seeds!");
-      return;
-    }
     await bot.equip(seedID);
     await bot.pathfinder.goto(
       new GoalBlock(target[0].x, target[0].y, target[0].z));
@@ -497,6 +557,7 @@ async function getLog(count = 1) {
     for (let i = 0; i < toChop.length; i++) {
       // just in case the server has treecapitator
       if (!logBlockIDs.includes(bot.blockAt(toChop[i]).type)) continue;
+      bot.pathfinder.setMovements(defaultMove);
       await bot.collectBlock.collect(bot.blockAt(toChop[i]))
         .catch(console.log);
     }
