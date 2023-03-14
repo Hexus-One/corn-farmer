@@ -12,6 +12,7 @@ const RANGE_GOAL = 1; // get within this radius of the player
 const bot = mineflayer.createBot({
   host: process.argv[2],
   port: parseInt(process.argv[3]),
+  auth: 'microsoft',
   username: process.argv[4],
   password: process.argv[5]
 });
@@ -97,6 +98,7 @@ bot.once('spawn', async () => {
         mcData.blocksByName[mcData.items[logRecipe.delta[0].id].name].id);
     });
   });
+  mainLoop();
 });
 
 bot.on('chat', async (username, message) => {
@@ -240,6 +242,7 @@ async function hoeAndSow(tiles) {
       .catch(console.log);
     // destroy any grass that might be on top
     let above = bot.blockAt(position.offset(0, 1, 0));
+    if (above === null) continue;
     if (grassIDs.includes(above.type)) {
       await bot.unequip('hand');
       await bot.dig(above, true).catch(console.log);
@@ -282,7 +285,8 @@ function detectFarm() {
       for (let j = 0; j < Y_OFFSET.length; j++) {
         const y = Y_OFFSET[j];
         let newPos = position.offset(direction[0], y, direction[2]);
-        if (bot.blockAt(newPos).type != farmlandID) continue;
+        let farm = bot.blockAt(newPos)
+        if (farm === null || farm.type != farmlandID) continue;
         if (hasPosition(farmland, newPos)) continue;
         farmland.push(newPos);
         break;
@@ -297,10 +301,10 @@ function detectFarm() {
 // returns tiles suitable for farming
 // max is max tiles to search before stopping (can return slightly larger)
 function getFarmNeighbours(farmland, max) {
-  const farmlandID = mcData.blocksByName['farmland'].id;
   const tillableIDs = [
     mcData.blocksByName['dirt'].id,
-    mcData.blocksByName['grass_block'].id
+    mcData.blocksByName['grass_block'].id,
+    mcData.blocksByName['farmland'].id
   ];
   const airIDs = [
     mcData.blocksByName['air'].id,
@@ -308,19 +312,21 @@ function getFarmNeighbours(farmland, max) {
   ];
   const grassIDs = [ // maybe add flowers too
     mcData.blocksByName['grass'].id,
-    mcData.blocksByName['tall_grass'].id
+    mcData.blocksByName['tall_grass'].id,
+    mcData.blocksByName['wheat'].id
   ];
   let oldSize = farmland.length;
   let candidates = [];
   // one loop to check neighbours of farm tiles
   for (let i = 0; i < farmland.length; i++) {
-    if (candidates.length > max) return candidates;;
+    if (candidates.length > max) return candidates;
     const position = farmland[i];
     CARDINAL.forEach(direction => {
       let newPos = position.offset(...direction);
       let newPosBlock = bot.blockAt(newPos);
       let blockAbove = bot.blockAt(newPos.offset(0, 1, 0));
       // tl;dr needs to be dirt with air/grass above, and not already in list
+      if (newPosBlock === null) return;
       if ((tillableIDs.includes(newPosBlock.type))
         && (airIDs.includes(blockAbove.type)
           || grassIDs.includes(blockAbove.type))
@@ -332,14 +338,14 @@ function getFarmNeighbours(farmland, max) {
   }
   // another loop to check neighbours of neighbours (maybe)
   for (let i = 0; i < candidates.length; i++) {
-    if (candidates.length > max) return candidates;;
+    if (candidates.length > max) return candidates;
     const position = candidates[i];
     CARDINAL.forEach(direction => {
       let newPos = position.offset(...direction);
       let newPosBlock = bot.blockAt(newPos);
       let blockAbove = bot.blockAt(newPos.offset(0, 1, 0));
       // tl;dr needs to be dirt with air/grass above, and not already in list
-      if (newPosBlock === null) return candidates;;
+      if (newPosBlock === null) return;
       if ((tillableIDs.includes(newPosBlock.type))
         && (airIDs.includes(blockAbove.type)
           || grassIDs.includes(blockAbove.type))
@@ -370,12 +376,15 @@ function checkDecay(farmland) {
   let trampled = [];
   let i = 0;
   while (i < farmland.length) {
-    if (bot.blockAt(farmland[i]).type == farmlandID) {
+    let tile = bot.blockAt(farmland[i]);
+    if (tile === null) {
+      i++;
+    } else if (tile.type == farmlandID) {
       if (airIDs.includes(bot.blockAt(farmland[i].offset(0, 1, 0)).type)) {
         trampled.push(farmland[i]);
       }
       i++;
-    } else if (tillableIDs.includes(bot.blockAt(farmland[i]).type)
+    } else if (tillableIDs.includes(tile.type)
       && airIDs.includes(bot.blockAt(farmland[i].offset(0, 1, 0)).type)) {
       // tillable with air above; salvageable
       trampled.push(farmland[i]);
@@ -402,7 +411,7 @@ async function harvest(count = 1) {
   // in case the farmland is dry - don't want to risk it decaying in one tick
   if (countInventory('wheat_seeds') == 0) {
     console.log("Out of seeds!");
-    return;
+    return 0;
   }
   let harvested = 0;
   for (let i = 0; i < count; i++) {
@@ -566,6 +575,7 @@ async function getPlanks(count) {
 // but basically we're gonna try cut down the whole tree
 // otherwise it looks messy
 async function getLog(count = 1) {
+  console.log("Going woodcutting...");
   while (countMulti(logItemIDs) < count) {
     let logSearch = bot.findBlocks({
       matching: logBlockIDs,
