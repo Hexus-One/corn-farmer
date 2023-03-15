@@ -185,15 +185,24 @@ bot.on('blockUpdate', async (oldBlock, newBlock) => {
 //*/
 
 async function mainLoop() {
-  if (farm.length == 0) farm = detectFarm();
   while (true) {
-    await hoeAndSow(checkDecay(farm));
-    let neighbours = getFarmNeighbours(farm, 400);
+    farm = detectFarm(farm);
+    let decay = checkDecay(farm);
+    bot.viewer.drawPoints('decay', decay.map(elem => elem.offset(0.5, 3, 0.5),
+    0xff0000, 5));
+    await hoeAndSow(decay);
+    bot.viewer.erase('decay');
+    let neighbours = getFarmNeighbours(farm, 500, true);
     console.log(neighbours.length, "neighbours found");
+    bot.viewer.drawPoints('neighbours', neighbours.map(elem => elem.offset(0.5, 3, 0.5),
+    0xff0000, 5));
     await hoeAndSow(neighbours);
+    bot.viewer.erase('neighbours');
     // no crops available to harvest, wait a little
-    if (await harvest() == 0) {
+    if (bot.game.gameMode === 'survival' && await harvest() == 0) {
       await bot.waitForTicks(200);
+    } else {
+      await bot.waitForTicks(20);
     }
   }
 }
@@ -242,7 +251,12 @@ async function hoeAndSow(tiles) {
       .catch(console.log);
     // destroy any grass that might be on top
     let above = bot.blockAt(position.offset(0, 1, 0));
-    if (above === null) continue;
+    if (above === null) {
+      tiles[indexToRemove] = tiles[tiles.length - 1];
+      let tile = tiles.pop();
+      if (!hasPosition(farm, tile)) farm.push(tile);
+      continue;
+    }
     if (grassIDs.includes(above.type)) {
       await bot.unequip('hand');
       await bot.dig(above, true).catch(console.log);
@@ -261,50 +275,53 @@ async function hoeAndSow(tiles) {
     await bot.activateBlock(dirt).catch(console.log);
     tiles[indexToRemove] = tiles[tiles.length - 1];
     let tile = tiles.pop();
-    if (hasPosition(farm, tile)) farm.push(tile); // add it back to the farm
+    if (!hasPosition(farm, tile)) farm.push(tile); // add it back to the farm
   }
 }
 
 // get all contiguous farmland blocks
-function detectFarm() {
+function detectFarm(farm) {
   const farmlandID = mcData.blocksByName['farmland'].id;
-  let farmland = bot.findBlocks({
-    matching: farmlandID,
-    maxDistance: 4,
-    count: 2000 // 33*33 square has area 1089 so this should cover every farmland
-    // unless we're sitting in a stacked tower somehow
-  });
+  if (farm.length == 0) {
+    farm = bot.findBlocks({
+      matching: farmlandID,
+      maxDistance: 4,
+      count: 2000 // 33*33 square has area 1089 so this should cover every farmland
+      // unless we're sitting in a stacked tower somehow
+    });
+  }
   // loop through farmland blocks and check their neighbours
   // if its more farmland, add it to the farmland list
   // small optimisation: we check flat neighbours first,
   // also if we succeed on one direction then we skip to the next direction
   // foreach doesn't work on new elements in array so we're using for
-  for (let i = 0; i < farmland.length; i++) {
-    const position = farmland[i];
+  for (let i = 0; i < farm.length; i++) {
+    const position = farm[i];
     CARDINAL.forEach(direction => {
       for (let j = 0; j < Y_OFFSET.length; j++) {
         const y = Y_OFFSET[j];
         let newPos = position.offset(direction[0], y, direction[2]);
-        let farm = bot.blockAt(newPos)
-        if (farm === null || farm.type != farmlandID) continue;
-        if (hasPosition(farmland, newPos)) continue;
-        farmland.push(newPos);
+        let farmBlock = bot.blockAt(newPos)
+        if (farmBlock === null || farmBlock.type != farmlandID) continue;
+        if (hasPosition(farm, newPos)) continue;
+        farm.push(newPos);
         break;
       }
     });
   }
-  console.log("Detected", farmland.length, "tiles!");
-  return farmland;
+  console.log("Detected", farm.length, "tiles!");
+  return farm;
 }
 
 // check neighbours of existing farmland tiles for candidates
 // returns tiles suitable for farming
 // max is max tiles to search before stopping (can return slightly larger)
-function getFarmNeighbours(farmland, max) {
+// adjacent only - only check immediate neighbours
+function getFarmNeighbours(farmland, max, adjacentOnly = false) {
   const tillableIDs = [
     mcData.blocksByName['dirt'].id,
     mcData.blocksByName['grass_block'].id,
-    mcData.blocksByName['farmland'].id
+    // mcData.blocksByName['farmland'].id
   ];
   const airIDs = [
     mcData.blocksByName['air'].id,
@@ -313,7 +330,7 @@ function getFarmNeighbours(farmland, max) {
   const grassIDs = [ // maybe add flowers too
     mcData.blocksByName['grass'].id,
     mcData.blocksByName['tall_grass'].id,
-    mcData.blocksByName['wheat'].id
+    // mcData.blocksByName['wheat'].id
   ];
   let oldSize = farmland.length;
   let candidates = [];
@@ -336,6 +353,7 @@ function getFarmNeighbours(farmland, max) {
       }
     });
   }
+  if (adjacentOnly) return candidates;
   // another loop to check neighbours of neighbours (maybe)
   for (let i = 0; i < candidates.length; i++) {
     if (candidates.length > max) return candidates;
@@ -435,7 +453,7 @@ async function harvest(count = 1) {
     if (wheat.type != wheatID) continue;
     await bot.dig(wheat, true);
     await bot.activateBlock(bot.blockAt(target[0].offset(0, -1, 0)));
-    await waitForPickup(seedID);
+    await waitForPickup(seedID); // gets stuck if we're in creative
     harvested++;
   }
   return harvested;
