@@ -76,7 +76,7 @@ bot.once('spawn', async () => {
         mcData.blocksByName[mcData.items[logRecipe.delta[0].id].name].id);
     });
   });
-  mainLoop();
+  // mainLoop();
 });
 
 bot.on('chat', async (username, message) => {
@@ -122,7 +122,7 @@ bot.on('chat', async (username, message) => {
       await hoeAndSow(toTill);
       break;
     case 'expand':
-      await hoeAndSow(getFarmNeighbours(farm, 400));
+      await hoeAndSow(getFlatNeighbours(farm, 400));
       break;
     case 'mainloop':
       await mainLoop();
@@ -168,11 +168,13 @@ async function mainLoop() {
     await chomp();
     farm = detectFarm(farm);
     let decay = checkDecay(farm);
-    let neighbours = getFarmNeighbours(farm, 2000, false);
-    console.log(neighbours.length, "neighbours found");
+    let neighbours = getFlatNeighbours(farm, 2000, false);
+    console.log(neighbours.length, "flat neighbours found");
     // if there no neighbours, that means we've expanded to all flat areas
     // search for areas above and below
-
+    if (neighbours.length == 0) {
+      neighbours = getSlopeNeighbours(farm, 1);
+    }
     toTill = [...decay, ...neighbours];
     bot.viewer.drawPoints('todo', toTill.map(elem => elem.offset(0.5, 2, 0.5),
       0xff0000, 5)); // these extra args don't work :c
@@ -324,7 +326,7 @@ async function hoeAndSow(tiles, max = null) {
 // get all contiguous farmland blocks
 function detectFarm(farm) {
   const farmlandID = mcData.blocksByName['farmland'].id;
-  if (farm.length == 0) {
+  if (farm === null || farm.length == 0) {
     farm = bot.findBlocks({
       matching: farmlandID,
       maxDistance: 4,
@@ -359,7 +361,7 @@ function detectFarm(farm) {
 // returns tiles suitable for farming
 // max is max tiles to search before stopping (can return slightly larger)
 // adjacent only - only check immediate neighbours
-function getFarmNeighbours(farmland, max, adjacentOnly = false) {
+function getFlatNeighbours(farmland, max, adjacentOnly = false) {
   const tillableIDs = [
     mcData.blocksByName['dirt'].id,
     mcData.blocksByName['grass_block'].id,
@@ -420,6 +422,29 @@ function getFarmNeighbours(farmland, max, adjacentOnly = false) {
 
 // find candidates for going up or down terrain
 function getSlopeNeighbours(farmland, max) {
+  const slopeCandidates = [
+    [ // North
+      [-1, 0, -2], [0, 0, -2], [1, 0, -2],
+      [-1, 0, -1], [0, 0, -1], [1, 0, -1]
+    ],
+    [ // South
+      [-1, 0, 2], [0, 0, 2], [1, 0, 2],
+      [-1, 0, 1], [0, 0, 1], [1, 0, 1]
+    ],
+    [ // East
+      [2, 0, -1], [2, 0, 0], [2, 0, 1],
+      [1, 0, -1], [1, 0, 0], [1, 0, 1]
+    ],
+    [ // West
+      [-2, 0, -1], [-2, 0, 0], [-2, 0, 1],
+      [-1, 0, -1], [-1, 0, 0], [-1, 0, 1]
+    ],
+  ];
+  const heightOffsets = [
+    [0, 1, 0],
+    [0, -1, 0]
+  ];
+  const farmlandID = mcData.blocksByName['farmland'].id;
   const tillableIDs = [
     mcData.blocksByName['dirt'].id,
     mcData.blocksByName['grass_block'].id,
@@ -434,25 +459,35 @@ function getSlopeNeighbours(farmland, max) {
     mcData.blocksByName['tall_grass'].id,
     // mcData.blocksByName['wheat'].id
   ];
-  let oldSize = farmland.length;
   let candidates = [];
   // one loop to check neighbours of farm tiles
   for (let i = 0; i < farmland.length; i++) {
     if (candidates.length > max) return candidates;
-    const position = farmland[i];
-    CARDINAL.forEach(direction => {
-      let newPos = position.offset(...direction);
-      let newPosBlock = bot.blockAt(newPos);
-      let blockAbove = bot.blockAt(newPos.offset(0, 1, 0));
-      // tl;dr needs to be dirt with air/grass above, and not already in list
-      if (newPosBlock === null) return;
-      if ((tillableIDs.includes(newPosBlock.type))
-        && (airIDs.includes(blockAbove.type)
-          || grassIDs.includes(blockAbove.type))
-        && (!hasPosition(farmland, newPos))
-        && (!hasPosition(candidates, newPos))) {
-        candidates.push(newPos);
-      }
+    slopeCandidates.forEach(direction => {
+      // iterate through all 6 tiles
+      // if every tile is valid, then we add the 6 tiles
+      // to the candidate list
+      heightOffsets.some(heightOffset => {
+        const position = farmland[i].offset(...heightOffset);
+        if (direction.every(subTile => {
+          let subTilePos = position.offset(...subTile);
+          let subTileBlock = bot.blockAt(subTilePos);
+          if (subTileBlock === null) return false;
+          let blockAbove = bot.blockAt(subTilePos.offset(0, 1, 0));
+          return (tillableIDs.includes(subTileBlock.type)
+            && (airIDs.includes(blockAbove.type)
+              || grassIDs.includes(blockAbove.type)));
+        })) {
+          direction.forEach(subtile => {
+            let subTilePos = position.offset(...subtile);
+            if (!hasPosition(farmland, subTilePos)
+              && !hasPosition(candidates, subTilePos)) {
+              candidates.push(subTilePos);
+            }
+          })
+          return true;
+        }
+      });
     });
   }
   return candidates;
@@ -529,7 +564,7 @@ async function harvest(count = 1) {
     };
     await bot.equip(seedID);
     await bot.pathfinder.goto(
-      new GoalBlock(target[0].x, target[0].y, target[0].z));
+      new GoalBlock(target[0].x, target[0].y, target[0].z)).catch(console.log);
     let wheat = bot.blockAt(target[0]);
     // small chance we trampled the block we're about to harvest
     if (wheat.type != wheatID) continue;
@@ -732,7 +767,8 @@ async function getLog(count = 1) {
       // just in case the server has treecapitator
       if (!logBlockIDs.includes(bot.blockAt(toChop[i]).type)) continue;
       bot.pathfinder.setMovements(defaultMove);
-      await bot.collectBlock.collect(bot.blockAt(toChop[i]), true);
+      await bot.collectBlock.collect(bot.blockAt(toChop[i]), true)
+        .catch(console.log);
     }
     while (countInventory("wooden_axe") < 2) await craftAxe();
   }
