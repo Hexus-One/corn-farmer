@@ -12,7 +12,7 @@ const RANGE_GOAL = 1; // get within this radius of the player
 const bot = mineflayer.createBot({
   host: process.argv[2],
   port: parseInt(process.argv[3]),
-  auth: 'microsoft',
+  // auth: 'microsoft',
   username: process.argv[4],
   password: process.argv[5]
 });
@@ -23,27 +23,6 @@ bot.loadPlugin(pathfinder);
 bot.on('kicked', (reason, loggedIn) => console.log(reason, loggedIn));
 bot.on('end', (reason) => console.log(reason));
 bot.on('error', err => console.log(err));
-
-// spots to check when analysing tree blocks
-// i have no clue if its vec3 or vec3.Vec3
-const TREE_ADJACENT = [
-  [0, -1, 0],
-  [-1, -1, 0],
-  [1, -1, 0],
-  [0, -1, -1],
-  [0, -1, 1],
-
-  [-1, 0, 0],
-  [1, 0, 0],
-  [0, 0, -1],
-  [0, 0, 1],
-
-  [0, 1, 0],
-  [-1, 1, 0],
-  [1, 1, 0],
-  [0, 1, -1],
-  [0, 1, 1],
-];
 
 const CARDINAL = [
   [0, 0, -1],
@@ -80,7 +59,6 @@ bot.once('spawn', async () => {
   delicateMove.placeCost = 9999;
   delicateMove.maxDropDown = 1;
   delicateMove.allowParkour = false;
-  delicateMove.allowSprinting = false;
 
   // generate tables
   tableID = mcData.itemsByName["crafting_table"].id;
@@ -149,6 +127,12 @@ bot.on('chat', async (username, message) => {
     case 'mainloop':
       await mainLoop();
       break;
+    case 'bed':
+      await sleepInBed();
+      break;
+    case 'chomp':
+      await chomp();
+      break;
   }
 })
 
@@ -163,7 +147,9 @@ bot.on('itemDrop', async (entity) => {
 });
 //*/
 
-//*
+// I thought it would be neat for the bot to retill on the fly
+// but this method makes it backtrace way too often
+/*
 bot.on('blockUpdate', async (oldBlock, newBlock) => {
   // console.log('blockUpdate', oldBlock, newBlock)
   // replace trampled/decayed farmland if we encounter any
@@ -176,14 +162,21 @@ bot.on('blockUpdate', async (oldBlock, newBlock) => {
 
 async function mainLoop() {
   while (true) {
+    if (bot.time.timeOfDay > 10000 || bot.thunderState != 0) {
+      await sleepInBed();
+    }
+    await chomp();
     farm = detectFarm(farm);
     let decay = checkDecay(farm);
-    let neighbours = getFarmNeighbours(farm, 500, true);
+    let neighbours = getFarmNeighbours(farm, 2000, false);
     console.log(neighbours.length, "neighbours found");
+    // if there no neighbours, that means we've expanded to all flat areas
+    // search for areas above and below
+
     toTill = [...decay, ...neighbours];
-    bot.viewer.drawPoints('todo', toTill.map(elem => elem.offset(0.5, 3, 0.5),
-    0xff0000, 5));
-    await hoeAndSow(toTill);
+    bot.viewer.drawPoints('todo', toTill.map(elem => elem.offset(0.5, 2, 0.5),
+      0xff0000, 5)); // these extra args don't work :c
+    await hoeAndSow(toTill, 64);
     bot.viewer.erase('todo');
     // no crops available to harvest, wait a little
     if (bot.game.gameMode === 'survival' && await harvest() == 0) {
@@ -194,16 +187,77 @@ async function mainLoop() {
   }
 }
 
+// make bread and eat it (assuming we have wheat)
+async function chomp() {
+  // check bread count
+  // if we have < a threshold, craft bread up to 64
+  const breadID = mcData.itemsByName['bread'].id;
+  const wheatID = mcData.itemsByName['wheat'].id;
+  let breadCount = countInventory('bread');
+  if (breadCount < 10) {
+    let breadRecipes = bot.recipesFor(breadID, null, 1, fakeTable);
+    if (breadRecipes.length == 0) {
+      console.log("Not enough wheat to make bread!");
+      return;
+    }
+    await getCraftingTable();
+    // we only want 64 bread max
+    let canMake = Math.floor(countInventory('wheat') / 3);
+    canMake = Math.min(canMake, 64 - breadCount);
+    await craftWithTable(breadRecipes[0], canMake)
+      .catch(console.log);
+    await bot.look(bot.entity.yaw, 0, true);
+    // throw away any excess wheat
+    await bot.toss(wheatID, null, countInventory("wheat"));
+  }
+  // eat the bread (if we actually have any)
+  while (countInventory('bread') > 0 && bot.food < 20) {
+    await bot.equip(breadID);
+    bot.activateItem();
+    //await bot.consume().catch(console.log);
+    await bot.waitForTicks(10);
+  }
+  bot.deactivateItem();
+}
+
+// assume the bot has a bed
+// find a valid place for the bed
+// sleep in the bed
+// once the bot's awake, break the bed and pick it up
+async function sleepInBed() {
+  let bed = bot.findBlock({
+    matching: block => bot.isABed(block),
+    maxDistance: 160
+  });
+  bot.pathfinder.setMovements(delicateMove);
+  await bot.pathfinder.goto(
+    new GoalNear(bed.position.x,
+      bed.position.y,
+      bed.position.z,
+      RANGE_GOAL))
+    .catch(console.log);
+  while (true) {
+    try {
+      await bot.sleep(bed)
+      break;
+    } catch (error) {
+
+    }
+    await bot.waitForTicks(20);
+  }
+}
+
 // till and plant the given blocks
-async function hoeAndSow(tiles) {
+async function hoeAndSow(tiles, max = null) {
   const seedID = mcData.itemsByName['wheat_seeds'].id;
   const farmlandID = mcData.blocksByName['farmland'].id;
   const grassIDs = [ // maybe add flowers too
     mcData.blocksByName['grass'].id,
     mcData.blocksByName['tall_grass'].id
   ];
-
+  let tillCount = 0;
   while (tiles.length > 0) {
+    if (max != null && tillCount > max) break;
     if (countInventory('wheat_seeds') < 32) {
       console.log("Fetching more seeds...");
       await harvest(64);
@@ -263,6 +317,7 @@ async function hoeAndSow(tiles) {
     tiles[indexToRemove] = tiles[tiles.length - 1];
     let tile = tiles.pop();
     if (!hasPosition(farm, tile)) farm.push(tile); // add it back to the farm
+    tillCount++;
   }
 }
 
@@ -345,6 +400,46 @@ function getFarmNeighbours(farmland, max, adjacentOnly = false) {
   for (let i = 0; i < candidates.length; i++) {
     if (candidates.length > max) return candidates;
     const position = candidates[i];
+    CARDINAL.forEach(direction => {
+      let newPos = position.offset(...direction);
+      let newPosBlock = bot.blockAt(newPos);
+      let blockAbove = bot.blockAt(newPos.offset(0, 1, 0));
+      // tl;dr needs to be dirt with air/grass above, and not already in list
+      if (newPosBlock === null) return;
+      if ((tillableIDs.includes(newPosBlock.type))
+        && (airIDs.includes(blockAbove.type)
+          || grassIDs.includes(blockAbove.type))
+        && (!hasPosition(farmland, newPos))
+        && (!hasPosition(candidates, newPos))) {
+        candidates.push(newPos);
+      }
+    });
+  }
+  return candidates;
+}
+
+// find candidates for going up or down terrain
+function getSlopeNeighbours(farmland, max) {
+  const tillableIDs = [
+    mcData.blocksByName['dirt'].id,
+    mcData.blocksByName['grass_block'].id,
+    // mcData.blocksByName['farmland'].id
+  ];
+  const airIDs = [
+    mcData.blocksByName['air'].id,
+    mcData.blocksByName['cave_air'].id,
+  ];
+  const grassIDs = [ // maybe add flowers too
+    mcData.blocksByName['grass'].id,
+    mcData.blocksByName['tall_grass'].id,
+    // mcData.blocksByName['wheat'].id
+  ];
+  let oldSize = farmland.length;
+  let candidates = [];
+  // one loop to check neighbours of farm tiles
+  for (let i = 0; i < farmland.length; i++) {
+    if (candidates.length > max) return candidates;
+    const position = farmland[i];
     CARDINAL.forEach(direction => {
       let newPos = position.offset(...direction);
       let newPosBlock = bot.blockAt(newPos);
@@ -515,6 +610,7 @@ async function craftWithTable(recipe, count = 1) {
   }
   let tablePosition = craftingSpot.position;
   await bot.equip(tableID);
+  bot.pathfinder.setMovements(delicateMove);
   currentGoal = new GoalNearXZ(tablePosition.x, tablePosition.z, 2);
   await bot.pathfinder.goto(currentGoal).catch(console.log);
   await bot.placeBlock(craftingSpot, { x: 0, y: 1, z: 0 }).catch(console.log);
@@ -527,7 +623,8 @@ async function craftWithTable(recipe, count = 1) {
     maxDistance: 4,
   });
   await bot.craft(recipe, count, table);
-  await bot.collectBlock.collect(table);
+  // TODO: change if the bot keeps punching holes in the farmland
+  await bot.collectBlock.collect(table, true);
   currentGoal = null;
 }
 
@@ -580,6 +677,24 @@ async function getPlanks(count) {
 // but basically we're gonna try cut down the whole tree
 // otherwise it looks messy
 async function getLog(count = 1) {
+  const TREE_ADJACENT = [
+    [0, -1, 0],
+    [-1, -1, 0],
+    [1, -1, 0],
+    [0, -1, -1],
+    [0, -1, 1],
+
+    [-1, 0, 0],
+    [1, 0, 0],
+    [0, 0, -1],
+    [0, 0, 1],
+
+    [0, 1, 0],
+    [-1, 1, 0],
+    [1, 1, 0],
+    [0, 1, -1],
+    [0, 1, 1],
+  ];
   console.log("Going woodcutting...");
   while (countMulti(logItemIDs) < count) {
     let logSearch = bot.findBlocks({
@@ -617,8 +732,7 @@ async function getLog(count = 1) {
       // just in case the server has treecapitator
       if (!logBlockIDs.includes(bot.blockAt(toChop[i]).type)) continue;
       bot.pathfinder.setMovements(defaultMove);
-      await bot.collectBlock.collect(bot.blockAt(toChop[i]))
-        .catch(console.log);
+      await bot.collectBlock.collect(bot.blockAt(toChop[i]), true);
     }
     while (countInventory("wooden_axe") < 2) await craftAxe();
   }
