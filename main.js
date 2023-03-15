@@ -68,7 +68,7 @@ let plankIDs = [];
 let logItemIDs = [];
 let logBlockIDs = [];
 let farm = [];
-let trampled = [];
+let toTill = [];
 
 bot.once('spawn', async () => {
   console.log("Joined server!");
@@ -138,10 +138,10 @@ bot.on('chat', async (username, message) => {
       farm = detectFarm();
       break;
     case 'decay':
-      trampled = checkDecay(farm);
+      toTill = checkDecay(farm);
       break;
     case 'fix':
-      await hoeAndSow(trampled);
+      await hoeAndSow(toTill);
       break;
     case 'expand':
       await hoeAndSow(getFarmNeighbours(farm, 400));
@@ -163,24 +163,14 @@ bot.on('itemDrop', async (entity) => {
 });
 //*/
 
-/*
+//*
 bot.on('blockUpdate', async (oldBlock, newBlock) => {
-    // console.log('blockUpdate', oldBlock, newBlock)
-    // replace trampled/decayed farmland if we encounter any
-    // bot moves so it can view the top of the farmland to also replace crops
-    // todo: maybe distinguish between player-trampled farmland and decaying farmland further away?
-    if (currentGoal == null
-        && oldBlock.name === "farmland" && newBlock.name === "dirt") {
-        console.log("Farmland decayed/trampled :c");
-        let dirt = newBlock.position
-        currentGoal = new GoalNear(dirt.x, dirt.y + 1, dirt.z, RANGE_GOAL);
-        await equipHoe(); // maybe this should happen at the start
-        bot.pathfinder.setMovements(delicateMove);
-        await bot.pathfinder.goto(currentGoal).catch(console.log);
-        await bot.lookAt(dirt, true);
-        await bot.activateBlock(bot.blockAt(dirt)); // till the dirt
-        currentGoal = null;
-    }
+  // console.log('blockUpdate', oldBlock, newBlock)
+  // replace trampled/decayed farmland if we encounter any
+  if (oldBlock.name === "farmland" && newBlock.name === "dirt") {
+    let dirt = newBlock.position;
+    toTill.push(dirt);
+  }
 })
 //*/
 
@@ -188,16 +178,13 @@ async function mainLoop() {
   while (true) {
     farm = detectFarm(farm);
     let decay = checkDecay(farm);
-    bot.viewer.drawPoints('decay', decay.map(elem => elem.offset(0.5, 3, 0.5),
-    0xff0000, 5));
-    await hoeAndSow(decay);
-    bot.viewer.erase('decay');
     let neighbours = getFarmNeighbours(farm, 500, true);
     console.log(neighbours.length, "neighbours found");
-    bot.viewer.drawPoints('neighbours', neighbours.map(elem => elem.offset(0.5, 3, 0.5),
+    toTill = [...decay, ...neighbours];
+    bot.viewer.drawPoints('todo', toTill.map(elem => elem.offset(0.5, 3, 0.5),
     0xff0000, 5));
-    await hoeAndSow(neighbours);
-    bot.viewer.erase('neighbours');
+    await hoeAndSow(toTill);
+    bot.viewer.erase('todo');
     // no crops available to harvest, wait a little
     if (bot.game.gameMode === 'survival' && await harvest() == 0) {
       await bot.waitForTicks(200);
