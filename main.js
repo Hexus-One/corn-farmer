@@ -5,6 +5,7 @@ const mineflayer = require('mineflayer');
 const { mineflayer: mineflayerViewer } = require('prismarine-viewer');
 const { pathfinder, Movements, goals: { GoalBlock, GoalNear, GoalNearXZ, GoalPlaceBlock, GoalLookAtBlock } } = require('mineflayer-pathfinder');
 
+const { once } = require('events');
 const vec3 = require('vec3');
 const { sleep } = require('mineflayer/lib/promise_utils');
 
@@ -144,9 +145,13 @@ bot.on('whisper', async (username, message) => {
   console.log("whisper", username, message);
 });
 
+// quit and error if the bot is hurt
 bot.on('entityHurt', async (entity) => {
   if (entity === bot.entity && bot.health < 15) {
     bot.quit();
+    setTimeout(() => {
+      throw "Hurt!";
+    }, 2000);
   }
 });
 
@@ -232,15 +237,63 @@ async function chomp() {
   await bot.toss(wheatID, null, Math.max(countInventory("wheat") - 192, 0));
 }
 
-// assume the bot has a bed
-// find a valid place for the bed
+// try place a bed
 // sleep in the bed
 // once the bot's awake, break the bed and pick it up
 async function sleepInBed() {
+  const bedID = mcData.itemsByName["white_bed"].id; // maybe adapt to all bed colours later
+  const airIDs = [
+    mcData.blocksByName["air"].id,
+    mcData.blocksByName["cave_air"].id
+  ];
+  // basically a plus shape offset above origin
+  const ABOVE_PLUS = [
+    [0, 1, 0],
+    [0, 1, -1],
+    [0, 1, 1],
+    [-1, 1, 0],
+    [1, 1, 0]
+  ];
+
+  let solidBlocks = bot.findBlocks({
+    matching: (block) => {
+      return (!airIDs.includes(block.type));
+    },
+    count: 6400,
+    maxDistance: 10,
+  });
+
+  let bedSpotBlock;
+  let bedSpotPosition;
+  // check if theres a plus-shaped air scape above the block to place a bed
+  // I don't know how to enforce directionality when placing a bed
+  // so for now we just ensure we can place it in any orientation
+  for (position of solidBlocks) {
+    let block = bot.blockAt(position);
+    if (bot.entity.position.xzDistanceTo(position) <= 2) continue;
+    if (ABOVE_PLUS.every(aboveOffset => {
+      let topBlock = bot.blockAt(block.position.offset(...aboveOffset));
+      return airIDs.includes(topBlock.type);
+    })) {
+      bedSpotBlock = block;
+      bedSpotPosition = position;
+      break;
+    }
+  }
+  // i'm supposed to check if a spot has been found but i'm too lazy :)
+  bot.pathfinder.setMovements(delicateMove);
+  await bot.pathfinder.goto(
+    new GoalNear(bedSpotPosition.x, bedSpotPosition.y, bedSpotPosition.z, 3))
+    .catch(console.log);
+  await bot.equip(bedID);
+  await bot.placeBlock(bedSpotBlock, { x: 0, y: 1, z: 0 }).catch(console.log);
+
   let bed = bot.findBlock({
     matching: block => bot.isABed(block),
-    maxDistance: 160
+    maxDistance: 10
   });
+  // we should be close enough that moving isn't needed
+  /*
   bot.pathfinder.setMovements(delicateMove);
   await bot.pathfinder.goto(
     new GoalNear(bed.position.x,
@@ -248,15 +301,24 @@ async function sleepInBed() {
       bed.position.z,
       RANGE_GOAL))
     .catch(console.log);
+  //*/
   while (bot.time.timeOfDay > 12000) {
     try {
-      await bot.sleep(bed)
+      await bot.sleep(bed);
       break;
     } catch (error) {
 
     }
     await bot.waitForTicks(20);
   }
+  await once(bot, 'wake');
+  await bot.collectBlock.collect(bed, { ignoreNoPath: true })
+    .catch(console.log);
+
+  await bot.collectBlock.collect(bot.nearestEntity(entity => {
+    return (entity.entityType == 45 && entity.metadata['8'].itemId == bedID);
+  }), { ignoreNoPath: true })
+    .catch(console.log);
 }
 
 // till and plant the given blocks
@@ -641,7 +703,7 @@ async function craftWithTable(recipe, count = 1) {
     matching: (block) => {
       return (!airIDs.includes(block.type));
     },
-    count: 640,
+    count: 6400,
     maxDistance: 10,
   });
 
@@ -675,7 +737,7 @@ async function craftWithTable(recipe, count = 1) {
   await bot.craft(recipe, count, table);
   await bot.waitForTicks(1);
   // TODO: change if the bot keeps punching holes in the farmland
-  await bot.collectBlock.collect(table, true).catch(console.log);
+  await bot.collectBlock.collect(table, { ignoreNoPath: true }).catch(console.log);
   currentGoal = null;
 }
 
@@ -786,7 +848,7 @@ async function getLog(count = 1) {
       // just in case the server has treecapitator
       if (!logBlockIDs.includes(bot.blockAt(toChop[i]).type)) continue;
       bot.pathfinder.setMovements(defaultMove);
-      await bot.collectBlock.collect(bot.blockAt(toChop[i]), true)
+      await bot.collectBlock.collect(bot.blockAt(toChop[i]), { ignoreNoPath: true })
         .catch(console.log);
     }
     while (countInventory("wooden_axe") < 2) await craftAxe();
