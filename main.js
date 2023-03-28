@@ -645,7 +645,7 @@ async function harvest(count = 1) {
       matching: (block) => {
         return block.type === wheatID && block.metadata === 7;
       },
-      maxDistance: 64
+      maxDistance: 256
     });
     if (target.length == 0) {
       console.log("Ran out of wheat to harvest!");
