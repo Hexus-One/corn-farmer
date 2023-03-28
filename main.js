@@ -43,7 +43,7 @@ let delicateMove;
 let mcData; // gets loaded after bot joins server (version unknown)
 let currentGoal = null;
 let fakeTable = { id: 'minecraft:crafting_table' }
-let tableID;
+let craftingTableID;
 let tableRecipes;
 let plankIDs = [];
 let logItemIDs = [];
@@ -63,8 +63,8 @@ bot.once('spawn', async () => {
   delicateMove.allowParkour = false;
 
   // generate tables
-  tableID = mcData.itemsByName["crafting_table"].id;
-  tableRecipes = bot.recipesAll(tableID, null, null);
+  craftingTableID = mcData.itemsByName["crafting_table"].id;
+  tableRecipes = bot.recipesAll(craftingTableID, null, null);
   plankIDs = tableRecipes.reduce((plankArray, recipe) => {
     plankArray.push(recipe.delta[0].id);
     return plankArray;
@@ -210,6 +210,7 @@ async function chomp() {
   // if we have < a threshold, craft bread up to 64
   const breadID = mcData.itemsByName['bread'].id;
   const wheatID = mcData.itemsByName['wheat'].id;
+  const haybaleID = mcData.itemsByName['hay_block'].id
   let breadCount = countInventory('bread');
   if (breadCount < 10) {
     let breadRecipes = bot.recipesFor(breadID, null, 1, fakeTable);
@@ -232,9 +233,23 @@ async function chomp() {
     await bot.waitForTicks(20);
   }
   bot.deactivateItem();
-  // throw away any excess wheat
-  await bot.look(bot.entity.yaw, 0, true);
-  await bot.toss(wheatID, null, Math.max(countInventory("wheat") - 192, 0));
+  // craft excess wheat into hay bales
+  // if we have a stack + 63 wheat (craft 63 into hay bales, leaving a stack of wheat behind)
+  if (countInventory("wheat") >= 127) {
+    let hayRecipes = bot.recipesFor(haybaleID, null, 1, fakeTable);
+    // theres no way for this to fail so we don't do fail checks
+    let canMake = Math.floor((countInventory('wheat') - 64) / 9);
+    await craftWithTable(hayRecipes[0], canMake)
+      .catch(console.log);
+  }
+}
+
+// stay alive by eating and sleeping
+async function doSurvivalCheck() {
+  if (bot.time.timeOfDay > 12500 || bot.thunderState > 0.5) {
+    await sleepInBed();
+  }
+  await chomp();
 }
 
 // try place a bed
@@ -314,7 +329,7 @@ async function sleepInBed() {
   await once(bot, 'wake');
   await bot.collectBlock.collect(bed, { ignoreNoPath: true })
     .catch(console.log);
-
+  await bot.waitForTicks(1);
   await bot.collectBlock.collect(bot.nearestEntity(entity => {
     return (entity.entityType == 45 && entity.metadata['8'].itemId == bedID);
   }), { ignoreNoPath: true })
@@ -331,10 +346,7 @@ async function hoeAndSow(tiles, max = null) {
   ];
   let tillCount = 0;
   while (tiles.length > 0) {
-    if (bot.time.timeOfDay > 12500 || bot.thunderState > 0.5) {
-      await sleepInBed();
-    }
-    await chomp();
+    await doSurvivalCheck();
     if (max != null && tillCount > max) break;
     if (countInventory('wheat_seeds') < 32) {
       console.log("Fetching more seeds...");
@@ -626,6 +638,7 @@ async function harvest(count = 1) {
   }
   let harvested = 0;
   for (let i = 0; i < count; i++) {
+    await doSurvivalCheck();
     const wheatID = mcData.blocksByName['wheat'].id;
     const seedID = mcData.itemsByName['wheat_seeds'].id;
     let target = bot.findBlocks({
@@ -711,8 +724,8 @@ async function craftWithTable(recipe, count = 1) {
   for (position of solidBlocks) {
     let block = bot.blockAt(position);
     let topBlock = bot.blockAt(block.position.offset(0, 1, 0));
-    if (topBlock.type !== airIDs[0] && topBlock.type !== airIDs[1]) continue;
     if (bot.entity.position.xzDistanceTo(position) <= 2) continue;
+    if (!airIDs.includes(topBlock.type)) continue;
     craftingSpot = block;
     break;
   }
@@ -724,7 +737,7 @@ async function craftWithTable(recipe, count = 1) {
   bot.pathfinder.setMovements(delicateMove);
   currentGoal = new GoalNearXZ(tablePosition.x, tablePosition.z, 2);
   await bot.pathfinder.goto(currentGoal).catch(console.log);
-  await bot.equip(tableID);
+  await bot.equip(craftingTableID);
   await bot.placeBlock(craftingSpot, { x: 0, y: 1, z: 0 }).catch(console.log);
   console.log("Placed the table! (maybe)");
   await bot.waitForTicks(1);
@@ -737,7 +750,21 @@ async function craftWithTable(recipe, count = 1) {
   await bot.craft(recipe, count, table);
   await bot.waitForTicks(1);
   // TODO: change if the bot keeps punching holes in the farmland
-  await bot.collectBlock.collect(table, { ignoreNoPath: true }).catch(console.log);
+  // changed cause the damn bot keeps breaking farmland
+  if (countInventory("wooden_axe") >= 1) {
+    if (!bot.heldItem || bot.heldItem.name != "wooden_axe") {
+      await bot.equip(mcData.itemsByName["wooden_axe"].id);
+    }
+  } else {
+    await bot.equip(mcData.itemsByName["white_bed"].id);
+  }
+  await bot.dig(table, true);
+  await bot.waitForTicks(1);
+  // and then run to the item to pick it up
+  await bot.collectBlock.collect(bot.nearestEntity(entity => {
+    return (entity.entityType == 45 && entity.metadata['8'].itemId == craftingTableID);
+  }), { ignoreNoPath: true })
+    .catch(console.log);
   currentGoal = null;
 }
 
@@ -752,7 +779,7 @@ async function getCraftingTable(count = 1) {
     await getPlanks(4);
     // we should have >= 4 planks of some kind at this point
     // after all this, we can attempt to craft a table
-    tableRecipes = bot.recipesFor(tableID, null, 1, null);
+    tableRecipes = bot.recipesFor(craftingTableID, null, 1, null);
     await bot.craft(tableRecipes[0]);
     await bot.waitForTicks(1);
     await bot.equip(mcData.itemsByName["crafting_table"].id)
