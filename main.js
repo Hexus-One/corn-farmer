@@ -79,7 +79,7 @@ bot.once('spawn', async () => {
     });
   });
   await bot.waitForChunksToLoad();
-  // await mainLoop();
+  await mainLoop();
 });
 
 bot.on('chat', async (username, message) => {
@@ -87,7 +87,7 @@ bot.on('chat', async (username, message) => {
   if (username === bot.username) return; // i.e. ignore own messages
   const ARGS = message.split(' ');
   let count; // used in two cases below
-  //*
+  /*
   switch (ARGS[0]) {
     case "cmere":
       const target = bot.players[username]?.entity;
@@ -285,7 +285,7 @@ async function sleepInBed() {
   // so for now we just ensure we can place it in any orientation
   for (position of solidBlocks) {
     let block = bot.blockAt(position);
-    if (bot.entity.position.xzDistanceTo(position) <= 2) continue;
+    if (bot.entity.position.xzDistanceTo(position) <= 2.5) continue;
     if (ABOVE_PLUS.every(aboveOffset => {
       let topBlock = bot.blockAt(block.position.offset(...aboveOffset));
       return airIDs.includes(topBlock.type);
@@ -308,13 +308,14 @@ async function sleepInBed() {
     maxDistance: 10
   });
   // we should be close enough that moving isn't needed
-  /*
+  // nope we do HAHA
+  //*
   bot.pathfinder.setMovements(delicateMove);
   await bot.pathfinder.goto(
     new GoalNear(bed.position.x,
       bed.position.y,
       bed.position.z,
-      RANGE_GOAL))
+      2))
     .catch(console.log);
   //*/
   while (bot.time.timeOfDay > 12000) {
@@ -325,11 +326,13 @@ async function sleepInBed() {
 
     }
     await bot.waitForTicks(20);
+    bot.setControlState('jump', true); // try jumping
   }
+  bot.setControlState('jump', false);
   await once(bot, 'wake');
-  await bot.collectBlock.collect(bed, { ignoreNoPath: true })
-    .catch(console.log);
-  await bot.waitForTicks(1);
+  await bot.dig(bed, true);
+  // await bot.waitForTicks(1);
+  await once(bot, 'itemDrop');
   await bot.collectBlock.collect(bot.nearestEntity(entity => {
     return (entity.entityType == 45 && entity.metadata['8'].itemId == bedID);
   }), { ignoreNoPath: true })
@@ -759,7 +762,7 @@ async function craftWithTable(recipe, count = 1) {
     await bot.equip(mcData.itemsByName["white_bed"].id);
   }
   await bot.dig(table, true);
-  await bot.waitForTicks(1);
+  await once(bot, 'itemDrop');
   // and then run to the item to pick it up
   await bot.collectBlock.collect(bot.nearestEntity(entity => {
     return (entity.entityType == 45 && entity.metadata['8'].itemId == craftingTableID);
