@@ -246,7 +246,7 @@ async function chomp() {
 
 // stay alive by eating and sleeping
 async function doSurvivalCheck() {
-  if (bot.time.timeOfDay > 12500 || bot.thunderState > 0.5) {
+  if (bot.time.timeOfDay > 12500 || bot.isRaining && bot.thunderState > 0) {
     await sleepInBed();
   }
   await chomp();
@@ -742,23 +742,18 @@ async function craftWithTable(recipe, count = 1) {
   currentGoal = new GoalNearXZ(tablePosition.x, tablePosition.z, 2);
   await bot.pathfinder.goto(currentGoal).catch(console.log);
   await bot.equip(craftingTableID);
-  while (true) {
-    try {
-      await bot.placeBlock(craftingSpot, { x: 0, y: 1, z: 0 });
-      break;
-    } catch (error) {
-      console.log(error);
-    }
-  }
-  console.log("Placed the table! (maybe)");
   let table = null;
-  const tableBlockID = mcData.blocksByName["crafting_table"].id;
   while (table === null) {
+    // sometimes placeblock errors even when it did indeed work
+    // so instead we just wait a bit and check if the table is there
+    await bot.placeBlock(craftingSpot, { x: 0, y: 1, z: 0 }).catch(console.log);
+    console.log("Placed the table! (maybe)");
+    await bot.waitForTicks(1);
+    const tableBlockID = mcData.blocksByName["crafting_table"].id;
     table = bot.findBlock({
       matching: tableBlockID,
       maxDistance: 10,
     });
-    await bot.waitForTicks(1);
   }
   await bot.craft(recipe, count, table);
   await bot.waitForTicks(1);
