@@ -57,10 +57,13 @@ bot.once('spawn', async () => {
   mineflayerViewer(bot, { port: 3007, firstPerson: false }); // port is the minecraft server port, if first person is false, you get a bird's-eye view
   defaultMove = new Movements(bot); // contains settings/config about the pathfinder
   delicateMove = new Movements(bot);
-  delicateMove.canDig = false;
   delicateMove.placeCost = 9999;
   delicateMove.maxDropDown = 1;
   delicateMove.allowParkour = false;
+  // delicateMove.canDig = false;
+  delicateMove.blocksCantBreak.add(mcData.blocksByName['farmland'].id);
+  delicateMove.blocksCantBreak.add(mcData.blocksByName['dirt'].id);
+  delicateMove.blocksCantBreak.add(mcData.blocksByName['grass_block'].id);
 
   // generate tables
   craftingTableID = mcData.itemsByName["crafting_table"].id;
@@ -147,7 +150,7 @@ bot.on('whisper', async (username, message) => {
 
 // quit and error if the bot is hurt
 bot.on('entityHurt', async (entity) => {
-  if (entity === bot.entity && bot.health < 15) {
+  if (entity === bot.entity && bot.health < 19) {
     bot.quit();
     setTimeout(() => {
       throw "Hurt!";
