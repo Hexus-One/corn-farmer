@@ -323,7 +323,7 @@ async function sleepInBed() {
       await bot.sleep(bed);
       break;
     } catch (error) {
-
+      console.log(error);
     }
     await bot.waitForTicks(20);
     bot.setControlState('jump', true); // try jumping
@@ -691,6 +691,7 @@ async function craftHoe(count = 1) {
   await getCraftingTable();
   await getSticks(2);
   await getPlanks(2);
+  await bot.waitForTicks(1);
   let hoeRecipes = bot.recipesFor(hoeID, null, 1, fakeTable);
   console.log(hoeRecipes);
   await craftWithTable(hoeRecipes[0]);
@@ -727,7 +728,7 @@ async function craftWithTable(recipe, count = 1) {
   for (position of solidBlocks) {
     let block = bot.blockAt(position);
     let topBlock = bot.blockAt(block.position.offset(0, 1, 0));
-    if (bot.entity.position.xzDistanceTo(position) <= 2) continue;
+    if (bot.entity.position.xzDistanceTo(position) <= 2.5) continue;
     if (!airIDs.includes(topBlock.type)) continue;
     craftingSpot = block;
     break;
@@ -741,15 +742,24 @@ async function craftWithTable(recipe, count = 1) {
   currentGoal = new GoalNearXZ(tablePosition.x, tablePosition.z, 2);
   await bot.pathfinder.goto(currentGoal).catch(console.log);
   await bot.equip(craftingTableID);
-  await bot.placeBlock(craftingSpot, { x: 0, y: 1, z: 0 }).catch(console.log);
+  while (true) {
+    try {
+      await bot.placeBlock(craftingSpot, { x: 0, y: 1, z: 0 });
+      break;
+    } catch (error) {
+      console.log(error);
+    }
+  }
   console.log("Placed the table! (maybe)");
-  await bot.waitForTicks(1);
-  let table = bot.findBlock({
-    matching: (block) => {
-      return block.name === "crafting_table";
-    },
-    maxDistance: 4,
-  });
+  let table = null;
+  const tableBlockID = mcData.blocksByName["crafting_table"].id;
+  while (table === null) {
+    table = bot.findBlock({
+      matching: tableBlockID,
+      maxDistance: 10,
+    });
+    await bot.waitForTicks(1);
+  }
   await bot.craft(recipe, count, table);
   await bot.waitForTicks(1);
   // TODO: change if the bot keeps punching holes in the farmland
