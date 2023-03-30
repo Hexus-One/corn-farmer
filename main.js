@@ -767,8 +767,16 @@ async function craftWithTable(recipe, count = 1) {
       maxDistance: 10,
     });
   }
-  await bot.craft(recipe, count, table);
-  await bot.waitForTicks(1);
+  // no clue why this keeps breaking aargh
+  while (true) {
+    try {
+      await bot.craft(recipe, count, table);
+      break;
+    } catch (error) {
+      console.log(error);
+    }
+    await bot.waitForTicks(10);
+  }
   // TODO: change if the bot keeps punching holes in the farmland
   // changed cause the damn bot keeps breaking farmland
   if (countInventory("wooden_axe") >= 1) {
