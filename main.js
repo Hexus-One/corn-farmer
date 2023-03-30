@@ -65,6 +65,10 @@ bot.once('spawn', async () => {
   delicateMove.blocksCantBreak.add(mcData.blocksByName['dirt'].id);
   delicateMove.blocksCantBreak.add(mcData.blocksByName['grass_block'].id);
 
+  // look at things faster
+  bot.physics.yawSpeed = 360;
+  bot.physics.pitchSpeed = 180;
+
   // generate tables
   craftingTableID = mcData.itemsByName["crafting_table"].id;
   tableRecipes = bot.recipesAll(craftingTableID, null, null);
@@ -665,7 +669,7 @@ async function harvest(count = 1) {
     if (wheat.type != wheatID) continue;
     await bot.dig(wheat, true);
     await bot.activateBlock(bot.blockAt(target[0].offset(0, -1, 0)));
-    await bot.waitForTicks(10);
+    await bot.waitForTicks(1);
     // await waitForPickup(seedID); // gets stuck if we're in creative
     harvested++;
   }
@@ -680,7 +684,7 @@ function countInventory(itemName) {
 };
 
 async function equipHoe() {
-  if (countInventory("wooden_hoe") < 1) await craftHoe();
+  if (countInventory("wooden_hoe") < 1) await craftHoe(4);
   if (!bot.heldItem || bot.heldItem.name != "wooden_hoe") {
     await bot.equip(mcData.itemsByName["wooden_hoe"].id);
   }
@@ -692,12 +696,16 @@ async function craftHoe(count = 1) {
   const hoeID = mcData.itemsByName["wooden_hoe"].id;
   // check we have sticks, planks and a table (and acquire them if we don't)
   await getCraftingTable();
-  await getSticks(2);
-  await getPlanks(2);
-  await bot.waitForTicks(1);
-  let hoeRecipes = bot.recipesFor(hoeID, null, 1, fakeTable);
-  console.log(hoeRecipes);
-  await craftWithTable(hoeRecipes[0]);
+  let hoeRecipes = null;
+  while (hoeRecipes === null || hoeRecipes.length == 0) {
+    await getSticks(2 * count);
+    await getPlanks(2 * count);
+    // sometimes the game doesn't detect we have the ingredients,
+    // so we keep checking repeatedly
+    hoeRecipes = bot.recipesFor(hoeID, null, 1, fakeTable);
+    await bot.waitForTicks(1);
+  }
+  await craftWithTable(hoeRecipes[0], count);
 };
 
 async function craftAxe(count = 1) {
@@ -745,6 +753,7 @@ async function craftWithTable(recipe, count = 1) {
   currentGoal = new GoalNearXZ(tablePosition.x, tablePosition.z, 2);
   await bot.pathfinder.goto(currentGoal).catch(console.log);
   await bot.equip(craftingTableID);
+  await bot.waitForTicks(1);
   let table = null;
   while (table === null) {
     // sometimes placeblock errors even when it did indeed work
@@ -804,7 +813,7 @@ async function getSticks(count) {
     await getPlanks(2);
     let stickRecipes = bot.recipesFor(stickID, null, 1, null);
     await bot.craft(stickRecipes[0]);
-    await bot.waitForTicks(1);
+    await bot.waitForTicks(5);
   }
 }
 
@@ -823,7 +832,7 @@ async function getPlanks(count) {
       }
     });
     await bot.craft(plankRecipe);
-    await bot.waitForTicks(1);
+    await bot.waitForTicks(5);
   }
 }
 
