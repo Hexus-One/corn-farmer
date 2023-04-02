@@ -3,7 +3,7 @@
 
 const mineflayer = require('mineflayer');
 const { mineflayer: mineflayerViewer } = require('prismarine-viewer');
-const { pathfinder, Movements, goals: { GoalBlock, GoalNear, GoalNearXZ, GoalPlaceBlock, GoalLookAtBlock } } = require('mineflayer-pathfinder');
+const { pathfinder, Movements, goals: { GoalBlock, GoalNear, GoalXZ, GoalNearXZ, GoalPlaceBlock, GoalLookAtBlock } } = require('mineflayer-pathfinder');
 
 const { once } = require('events');
 const vec3 = require('vec3');
@@ -22,10 +22,6 @@ const bot = mineflayer.createBot({
 bot.loadPlugin(require('mineflayer-collectblock').plugin);
 bot.loadPlugin(pathfinder);
 
-bot.on('kicked', (reason, loggedIn) => console.log(reason, loggedIn));
-bot.on('end', (reason) => console.log(reason));
-bot.on('error', err => console.log(err));
-
 const CARDINAL = [
   [0, 0, -1],
   [0, 0, 1],
@@ -41,7 +37,6 @@ const Y_OFFSET = [0, 1, -1];
 let defaultMove;
 let delicateMove;
 let mcData; // gets loaded after bot joins server (version unknown)
-let currentGoal = null;
 let fakeTable = { id: 'minecraft:crafting_table' }
 let craftingTableID;
 let tableRecipes;
@@ -50,6 +45,10 @@ let logItemIDs = [];
 let logBlockIDs = [];
 let farm = [];
 let toTill = [];
+
+bot.on('kicked', (reason, loggedIn) => console.log(reason, loggedIn));
+bot.on('end', (reason) => console.log(reason));
+bot.on('error', err => console.log(err));
 
 bot.once('spawn', async () => {
   console.log("Joined server!");
@@ -191,23 +190,19 @@ async function mainLoop() {
     farm = detectFarm(farm);
     let decay = checkDecay(farm);
     let neighbours = getFlatNeighbours(farm, 2000, false);
-    console.log(neighbours.length, "flat neighbours found");
+    console.log(timeInMMSS(), neighbours.length, "flat neighbours found");
     // if there no neighbours, that means we've expanded to all flat areas
     // search for areas above and below
     if (neighbours.length == 0) {
-      neighbours = getSlopeNeighbours(farm, 1);
+      neighbours = getSlopeNeighbours(farm, 2000);
     }
     toTill = [...decay, ...neighbours];
     bot.viewer.drawPoints('todo', toTill.map(elem => elem.offset(0.5, 2, 0.5),
       0xff0000, 5)); // these extra args don't work :c
-    await hoeAndSow(toTill, 500);
+    await hoeAndSow(toTill, 5000);
     bot.viewer.erase('todo');
     // no crops available to harvest, wait a little
-    if (bot.game.gameMode === 'survival' && await harvest() == 0) {
-      await bot.waitForTicks(200);
-    } else {
-      await bot.waitForTicks(20);
-    }
+    await bot.waitForTicks(20);
   }
 }
 
@@ -243,10 +238,11 @@ async function chomp() {
   // craft excess wheat into hay bales
   // if we have a stack + 63 wheat (craft 63 into hay bales, leaving a stack of wheat behind)
   if (countInventory("wheat") >= 127) {
-    let hayRecipes = bot.recipesFor(haybaleID, null, 1, fakeTable);
-    // theres no way for this to fail so we don't do fail checks
     let canMake = Math.floor((countInventory('wheat') - 64) / 9);
-    await craftWithTable(hayRecipes[0], canMake)
+    let hayRecipes = bot.recipesFor(haybaleID, null, canMake, fakeTable);
+    // theres no way for this to fail so we don't do fail checks
+    // ...surely...
+    await craftWithTable(hayRecipes[0], 1)
       .catch(console.log);
   }
 }
@@ -330,7 +326,7 @@ async function sleepInBed() {
       await bot.sleep(bed);
       break;
     } catch (error) {
-      console.log(error);
+      console.log(error.message);
     }
     await bot.waitForTicks(20);
     bot.setControlState('jump', true); // try jumping
@@ -360,7 +356,7 @@ async function hoeAndSow(tiles, max = null) {
     if (max != null && tillCount > max) break;
     if (countInventory('wheat_seeds') < 32) {
       console.log("Fetching more seeds...");
-      await harvest(64);
+      await harvest(128); // TODO: maybe make this variable?
       if (countInventory('wheat_seeds') < 32) { // i.e. we obtained 0 seeds
         console.log("Not enough seeds to continue! Aborting...");
         return; // too scared to use actual throw/try/catch
@@ -647,16 +643,27 @@ async function harvest(count = 1) {
     return 0;
   }
   let harvested = 0;
+  let lastY = 0;
   for (let i = 0; i < count; i++) {
     await doSurvivalCheck();
     const wheatID = mcData.blocksByName['wheat'].id;
     const seedID = mcData.itemsByName['wheat_seeds'].id;
+    // TODO: find same height wheat first so we trample less
+    // nvm i have no clue how to check position here
     let target = bot.findBlocks({
       matching: (block) => {
         return block.type === wheatID && block.metadata === 7;
       },
-      maxDistance: 256
+      maxDistance: 10
     });
+    if (target.length == 0) {
+      target = bot.findBlocks({
+        matching: (block) => {
+          return block.type === wheatID && block.metadata === 7;
+        },
+        maxDistance: 128
+      });
+    }
     if (target.length == 0) {
       console.log("Ran out of wheat to harvest!");
       break;
@@ -664,6 +671,7 @@ async function harvest(count = 1) {
     await bot.equip(seedID);
     await bot.pathfinder.goto(
       new GoalBlock(target[0].x, target[0].y, target[0].z)).catch(console.log);
+    lastY = target[0].y;
     let wheat = bot.blockAt(target[0]);
     // small chance we trampled the block we're about to harvest
     if (wheat.type != wheatID) continue;
@@ -684,7 +692,7 @@ function countInventory(itemName) {
 };
 
 async function equipHoe() {
-  if (countInventory("wooden_hoe") < 1) await craftHoe(4);
+  if (countInventory("wooden_hoe") < 1) await craftHoe(1);
   if (!bot.heldItem || bot.heldItem.name != "wooden_hoe") {
     await bot.equip(mcData.itemsByName["wooden_hoe"].id);
   }
@@ -697,15 +705,23 @@ async function craftHoe(count = 1) {
   // check we have sticks, planks and a table (and acquire them if we don't)
   await getCraftingTable();
   let hoeRecipes = null;
-  while (hoeRecipes === null || hoeRecipes.length == 0) {
+  while (true) {
     await getSticks(2 * count);
     await getPlanks(2 * count);
     // sometimes the game doesn't detect we have the ingredients,
     // so we keep checking repeatedly
-    hoeRecipes = bot.recipesFor(hoeID, null, 1, fakeTable);
-    await bot.waitForTicks(1);
+    hoeRecipes = bot.recipesFor(hoeID, null, count, fakeTable);
+    // restart if we don't have the ingredients
+    if (hoeRecipes === null || hoeRecipes.length == 0) continue;
+    // restart if the craft fails for whatever reason
+    try {
+      await craftWithTable(hoeRecipes[0], count);
+    } catch (error) {
+      console.log(error.message);
+    }
+    // sometimes it says we failed when it actually succeeded :)
+    if (countInventory("wooden_hoe") >= count) break;
   }
-  await craftWithTable(hoeRecipes[0], count);
 };
 
 async function craftAxe(count = 1) {
@@ -726,6 +742,7 @@ async function craftWithTable(recipe, count = 1) {
     mcData.blocksByName["cave_air"].id
   ];
   getCraftingTable();
+  await bot.equip(craftingTableID);
   // Find somewhere to put the crafting table.
   let solidBlocks = bot.findBlocks({
     matching: (block) => {
@@ -746,21 +763,19 @@ async function craftWithTable(recipe, count = 1) {
   }
   // Place the crafting table.
   if (!craftingSpot) {
-    console.log("Couldn't find somewhere to put the crafting table.");
+    console.log(timeInMMSS() + "Couldn't find somewhere to put the crafting table.");
   }
   let tablePosition = craftingSpot.position;
   bot.pathfinder.setMovements(delicateMove);
-  currentGoal = new GoalNearXZ(tablePosition.x, tablePosition.z, 2);
-  await bot.pathfinder.goto(currentGoal).catch(console.log);
-  await bot.equip(craftingTableID);
+  await bot.pathfinder.goto(
+    new GoalNearXZ(tablePosition.x, tablePosition.z, 2)).catch(console.log);
   await bot.waitForTicks(1);
   let table = null;
   while (table === null) {
     // sometimes placeblock errors even when it did indeed work
     // so instead we just wait a bit and check if the table is there
     await bot.placeBlock(craftingSpot, { x: 0, y: 1, z: 0 }).catch(console.log);
-    console.log("Placed the table! (maybe)");
-    await bot.waitForTicks(1);
+    await bot.waitForTicks(10);
     const tableBlockID = mcData.blocksByName["crafting_table"].id;
     table = bot.findBlock({
       matching: tableBlockID,
@@ -768,15 +783,14 @@ async function craftWithTable(recipe, count = 1) {
     });
   }
   // no clue why this keeps breaking aargh
-  while (true) {
-    try {
-      await bot.craft(recipe, count, table);
-      break;
-    } catch (error) {
-      console.log(error);
-    }
-    await bot.waitForTicks(10);
+  let craftSucceed = true;
+  try {
+    await bot.craft(recipe, count, table);
+  } catch (error) {
+    craftSucceed = false;
+    console.log(error.message);
   }
+  await bot.waitForTicks(1);
   // TODO: change if the bot keeps punching holes in the farmland
   // changed cause the damn bot keeps breaking farmland
   if (countInventory("wooden_axe") >= 1) {
@@ -787,13 +801,25 @@ async function craftWithTable(recipe, count = 1) {
     await bot.equip(mcData.itemsByName["white_bed"].id);
   }
   await bot.dig(table, true);
-  await once(bot, 'itemDrop');
-  // and then run to the item to pick it up
-  await bot.collectBlock.collect(bot.nearestEntity(entity => {
-    return (entity.entityType == 45 && entity.metadata['8'].itemId == craftingTableID);
-  }), { ignoreNoPath: true })
-    .catch(console.log);
-  currentGoal = null;
+  // wait for the table to drop and then pick it up
+  while (true) {
+    await once(bot, 'itemDrop');
+    let tableDrop = null;
+    tableDrop = bot.nearestEntity(entity => {
+      return (entity.entityType == 45
+        && entity.metadata['8'].itemId == craftingTableID);
+    });
+    if (tableDrop === null) continue;
+    await bot.pathfinder.goto(
+      new GoalXZ(tableDrop.position.x, tableDrop.position.z))
+      .catch(console.log);
+    break;
+  }
+  if (craftSucceed) {
+    return;
+  } else {
+    throw "Crafting failed!";
+  }
 }
 
 // if we don't have planks
@@ -820,7 +846,11 @@ async function getSticks(count) {
   while (countInventory("stick") < count) {
     await getPlanks(2);
     let stickRecipes = bot.recipesFor(stickID, null, 1, null);
-    await bot.craft(stickRecipes[0]);
+    try {
+      await bot.craft(stickRecipes[0]);
+    } catch (error) {
+      console.log(error.message);
+    }
     await bot.waitForTicks(5);
   }
 }
@@ -831,15 +861,23 @@ async function getPlanks(count) {
     await getLog(1);
     // we should have a log now hehe
     // attempt to craft each plank recipe and exit at the first successful one
-    let plankRecipe;
-    plankIDs.some(plank => {
-      let plankRecipes = bot.recipesFor(plank, null, 1, null);
-      if (plankRecipes.length > 0) {
-        plankRecipe = plankRecipes[0];
-        return true;
+    while (true) {
+      let plankRecipe;
+      plankIDs.some(plank => {
+        let plankRecipes = bot.recipesFor(plank, null, 1, null);
+        if (plankRecipes.length > 0) {
+          plankRecipe = plankRecipes[0];
+          return true;
+        }
+      });
+      try {
+        await bot.craft(plankRecipe);
+        break;
+      } catch (error) {
+        console.log(error.message);
       }
-    });
-    await bot.craft(plankRecipe);
+      await bot.waitForTicks(5);
+    }
     await bot.waitForTicks(5);
   }
 }
@@ -924,6 +962,18 @@ function waitForPickup(itemID = null) {
     }
     bot.on("playerCollect", listener);
   })
+}
+
+/**
+ * Only really used for debug/logpoints
+ * @returns Time of day formatted as MM:SS
+ */
+function timeInMMSS() {
+  // timeOfDay is in ticks, there are 20 ticks per second
+  let timeInSeconds = bot.time.timeOfDay / 20;
+  let timeMM = Math.floor(timeInSeconds / 60);
+  let timeSS = Math.floor((timeInSeconds % 60) * 100) / 100;
+  return `${timeMM}:${timeSS}`;
 }
 
 // used for planks and logs, get the highest count of each type
