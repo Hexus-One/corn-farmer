@@ -239,10 +239,10 @@ async function chomp() {
   // if we have a stack + 63 wheat (craft 63 into hay bales, leaving a stack of wheat behind)
   if (countInventory("wheat") >= 127) {
     let canMake = Math.floor((countInventory('wheat') - 64) / 9);
-    let hayRecipes = bot.recipesFor(haybaleID, null, canMake, fakeTable);
+    let hayRecipes = bot.recipesFor(haybaleID, null, 1, fakeTable);
     // theres no way for this to fail so we don't do fail checks
     // ...surely...
-    await craftWithTable(hayRecipes[0], 1)
+    await craftWithTable(hayRecipes[0], canMake)
       .catch(console.log);
   }
 }
@@ -356,7 +356,7 @@ async function hoeAndSow(tiles, max = null) {
     if (max != null && tillCount > max) break;
     if (countInventory('wheat_seeds') < 32) {
       console.log("Fetching more seeds...");
-      await harvest(128); // TODO: maybe make this variable?
+      await harvest(256); // TODO: maybe make this variable?
       if (countInventory('wheat_seeds') < 32) { // i.e. we obtained 0 seeds
         console.log("Not enough seeds to continue! Aborting...");
         return; // too scared to use actual throw/try/catch
@@ -424,7 +424,7 @@ function detectFarm(farm) {
     farm = bot.findBlocks({
       matching: farmlandID,
       maxDistance: 64,
-      count: 20 // 33*33 square has area 1089 so this should cover every farmland
+      count: 1000 // 33*33 square has area 1089 so this should cover every farmland
       // unless we're sitting in a stacked tower somehow
     });
   }
@@ -661,7 +661,7 @@ async function harvest(count = 1) {
         matching: (block) => {
           return block.type === wheatID && block.metadata === 7;
         },
-        maxDistance: 128
+        maxDistance: 256
       });
     }
     if (target.length == 0) {
@@ -684,13 +684,6 @@ async function harvest(count = 1) {
   return harvested;
 }
 
-// returns number of matching items/blocks
-function countInventory(itemName) {
-  let items = bot.inventory.items();
-  itemResult = items.filter(item => item.name === itemName);
-  return itemResult.reduce((subtotal, item) => subtotal + item.count, 0);
-};
-
 async function equipHoe() {
   if (countInventory("wooden_hoe") < 1) await craftHoe(1);
   if (!bot.heldItem || bot.heldItem.name != "wooden_hoe") {
@@ -712,12 +705,16 @@ async function craftHoe(count = 1) {
     // so we keep checking repeatedly
     hoeRecipes = bot.recipesFor(hoeID, null, count, fakeTable);
     // restart if we don't have the ingredients
-    if (hoeRecipes === null || hoeRecipes.length == 0) continue;
+    if (hoeRecipes === null || hoeRecipes.length == 0) {
+      await clearCraftingSlots();
+      await bot.waitForTicks(20);
+      continue;
+    }
     // restart if the craft fails for whatever reason
     try {
       await craftWithTable(hoeRecipes[0], count);
     } catch (error) {
-      console.log(error.message);
+      console.log(error);
     }
     // sometimes it says we failed when it actually succeeded :)
     if (countInventory("wooden_hoe") >= count) break;
@@ -798,7 +795,7 @@ async function craftWithTable(recipe, count = 1) {
       await bot.equip(mcData.itemsByName["wooden_axe"].id);
     }
   } else {
-    await bot.equip(mcData.itemsByName["white_bed"].id);
+    await bot.unequip('hand');
   }
   await bot.dig(table, true);
   // wait for the table to drop and then pick it up
@@ -834,6 +831,7 @@ async function getCraftingTable(count = 1) {
     // we should have >= 4 planks of some kind at this point
     // after all this, we can attempt to craft a table
     tableRecipes = bot.recipesFor(craftingTableID, null, 1, null);
+    await clearCraftingSlots();
     await bot.craft(tableRecipes[0]);
     await bot.waitForTicks(1);
     await bot.equip(mcData.itemsByName["crafting_table"].id)
@@ -849,9 +847,11 @@ async function getSticks(count) {
     try {
       await bot.craft(stickRecipes[0]);
     } catch (error) {
-      console.log(error.message);
+      await clearCraftingSlots();
+      console.log("getSticks" + error.message);
+      await bot.waitForTicks(10);
     }
-    await bot.waitForTicks(5);
+    await bot.waitForTicks(1);
   }
 }
 
@@ -874,11 +874,12 @@ async function getPlanks(count) {
         await bot.craft(plankRecipe);
         break;
       } catch (error) {
+        await clearCraftingSlots();
         console.log(error.message);
       }
-      await bot.waitForTicks(5);
+      await bot.waitForTicks(1);
     }
-    await bot.waitForTicks(5);
+    await bot.waitForTicks(1);
   }
 }
 
@@ -904,7 +905,6 @@ async function getLog(count = 1) {
     [0, 1, -1],
     [0, 1, 1],
   ];
-  console.log("Going woodcutting...");
   while (countMulti(logItemIDs) < count) {
     let logSearch = bot.findBlocks({
       matching: logBlockIDs,
@@ -948,6 +948,21 @@ async function getLog(count = 1) {
   }
 }
 
+/**
+ * Clears the crafting slots in the bot's inventory (in case its messed up) -
+ * Sometimes items get stuck in the crafting slots
+ * and they can't get used for further crafting
+ */
+async function clearCraftingSlots() {
+  // reverse order because 0 is the crafting output slot
+  for (let slot = 4; slot >= 0; slot--) {
+    if (bot.inventory.itemsRange(slot, slot + 1).length > 0) {
+      await bot.putAway(slot); // no clue why await fails sometimes
+    }
+  }
+  return;
+}
+
 // wait till the bot picks up an item
 function waitForPickup(itemID = null) {
   return new Promise((resolve) => {
@@ -972,16 +987,24 @@ function timeInMMSS() {
   // timeOfDay is in ticks, there are 20 ticks per second
   let timeInSeconds = bot.time.timeOfDay / 20;
   let timeMM = Math.floor(timeInSeconds / 60);
-  let timeSS = Math.floor((timeInSeconds % 60) * 100) / 100;
+  if (timeMM < 10) timeMM = '0' + timeMM;
+  let timeSS = Math.floor(timeInSeconds % 60);
+  if (timeSS < 10) timeSS = '0' + timeSS;
   return `${timeMM}:${timeSS}`;
 }
+
+// returns number of matching items/blocks
+function countInventory(itemName) {
+  return bot.inventory.countRange(1, 45, mcData.itemsByName[itemName].id);
+};
 
 // used for planks and logs, get the highest count of each type
 function countMulti(arrayIDs) {
   let count = 0;
-  arrayIDs.forEach(id => {
-    count = Math.max(count, countInventory(mcData.items[id].name));
-  });
+  // hopefully this works better than foreach
+  for (const id of arrayIDs) {
+    count = Math.max(count, bot.inventory.countRange(1, 45, id));
+  }
   return count;
 }
 
