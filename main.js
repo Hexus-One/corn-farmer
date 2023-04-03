@@ -649,14 +649,25 @@ async function harvest(count = 1) {
     const wheatID = mcData.blocksByName['wheat'].id;
     const seedID = mcData.itemsByName['wheat_seeds'].id;
     // TODO: find same height wheat first so we trample less
-    // nvm i have no clue how to check position here
     let target = bot.findBlocks({
       matching: (block) => {
-        return block.type === wheatID && block.metadata === 7;
+        return block.type == wheatID
+          && block.metadata == 7
       },
-      maxDistance: 10
+      maxDistance: 10,
+      count: 1000
     });
-    if (target.length == 0) {
+    // find the first block thats at the same y-level
+    let sameLevel = target.some(position => {
+      if (position.y == lastY) {
+        target[0] = position;
+        return true;
+      } else {
+        return false;
+      }
+    });
+    // otherwise do broader search
+    if (!sameLevel) {
       target = bot.findBlocks({
         matching: (block) => {
           return block.type === wheatID && block.metadata === 7;
