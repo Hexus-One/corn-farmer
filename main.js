@@ -236,8 +236,8 @@ async function chomp() {
   }
   bot.deactivateItem();
   // craft excess wheat into hay bales
-  // if we have a stack + 63 wheat (craft 63 into hay bales, leaving a stack of wheat behind)
-  if (countInventory("wheat") >= 127) {
+  // if we have a stack + 63*3 wheat (craft 63*3 into hay bales, leaving a stack of wheat behind)
+  if (countInventory("wheat") >= 253) {
     let canMake = Math.floor((countInventory('wheat') - 64) / 9);
     let hayRecipes = bot.recipesFor(haybaleID, null, 1, fakeTable);
     // theres no way for this to fail so we don't do fail checks
