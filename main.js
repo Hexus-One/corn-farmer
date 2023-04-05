@@ -485,6 +485,7 @@ function getFlatNeighbours(farmland, max, adjacentOnly = false) {
       if ((tillableIDs.includes(newPosBlock.type))
         && (airIDs.includes(blockAbove.type)
           || grassIDs.includes(blockAbove.type))
+        && (newPosBlock.biome.category !== 'forest')
         && (!hasPosition(farmland, newPos))
         && (!hasPosition(candidates, newPos))) {
         candidates.push(newPos);
@@ -505,6 +506,7 @@ function getFlatNeighbours(farmland, max, adjacentOnly = false) {
       if ((tillableIDs.includes(newPosBlock.type))
         && (airIDs.includes(blockAbove.type)
           || grassIDs.includes(blockAbove.type))
+        && (newPosBlock.biome.category !== 'forest')
         && (!hasPosition(farmland, newPos))
         && (!hasPosition(candidates, newPos))) {
         candidates.push(newPos);
@@ -570,7 +572,8 @@ function getSlopeNeighbours(farmland, max) {
           let blockAbove = bot.blockAt(subTilePos.offset(0, 1, 0));
           return (tillableIDs.includes(subTileBlock.type)
             && (airIDs.includes(blockAbove.type)
-              || grassIDs.includes(blockAbove.type)));
+              || grassIDs.includes(blockAbove.type))
+            && (newPosBlock.biome.category !== 'forest'));
         })) {
           direction.forEach(subtile => {
             let subTilePos = position.offset(...subtile);
@@ -688,7 +691,7 @@ async function harvest(count = 1) {
     if (wheat.type != wheatID) continue;
     await bot.dig(wheat, true);
     await bot.activateBlock(bot.blockAt(target[0].offset(0, -1, 0)));
-    await bot.waitForTicks(1);
+    await bot.waitForTicks(1); // currently experimenting what delay is fastest
     // await waitForPickup(seedID); // gets stuck if we're in creative
     harvested++;
   }
@@ -714,10 +717,10 @@ async function craftHoe(count = 1) {
     await getPlanks(2 * count);
     // sometimes the game doesn't detect we have the ingredients,
     // so we keep checking repeatedly
+    await clearCraftingSlots();
     hoeRecipes = bot.recipesFor(hoeID, null, count, fakeTable);
     // restart if we don't have the ingredients
     if (hoeRecipes === null || hoeRecipes.length == 0) {
-      await clearCraftingSlots();
       await bot.waitForTicks(20);
       continue;
     }
@@ -750,7 +753,6 @@ async function craftWithTable(recipe, count = 1) {
     mcData.blocksByName["cave_air"].id
   ];
   getCraftingTable();
-  await bot.equip(craftingTableID);
   // Find somewhere to put the crafting table.
   let solidBlocks = bot.findBlocks({
     matching: (block) => {
@@ -782,6 +784,8 @@ async function craftWithTable(recipe, count = 1) {
   while (table === null) {
     // sometimes placeblock errors even when it did indeed work
     // so instead we just wait a bit and check if the table is there
+    clearCraftingSlots();
+    await bot.equip(craftingTableID);
     await bot.placeBlock(craftingSpot, { x: 0, y: 1, z: 0 }).catch(console.log);
     await bot.waitForTicks(10);
     const tableBlockID = mcData.blocksByName["crafting_table"].id;
@@ -844,8 +848,15 @@ async function getCraftingTable(count = 1) {
     tableRecipes = bot.recipesFor(craftingTableID, null, 1, null);
     await clearCraftingSlots();
     await bot.craft(tableRecipes[0]);
-    await bot.waitForTicks(1);
-    await bot.equip(mcData.itemsByName["crafting_table"].id)
+    while (true) {
+      try {
+        await bot.equip(mcData.itemsByName["crafting_table"].id);
+        break;
+      } catch (error) {
+        console.log(error);
+      }
+      await bot.waitForTicks(1);
+    }
   }
 };
 
@@ -966,7 +977,7 @@ async function getLog(count = 1) {
  */
 async function clearCraftingSlots() {
   // reverse order because 0 is the crafting output slot
-  for (let slot = 4; slot >= 0; slot--) {
+  for (let slot = 4; slot >= 1; slot--) {
     if (bot.inventory.itemsRange(slot, slot + 1).length > 0) {
       await bot.putAway(slot); // no clue why await fails sometimes
     }
