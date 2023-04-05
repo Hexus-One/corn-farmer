@@ -573,7 +573,7 @@ function getSlopeNeighbours(farmland, max) {
           return (tillableIDs.includes(subTileBlock.type)
             && (airIDs.includes(blockAbove.type)
               || grassIDs.includes(blockAbove.type))
-            && (newPosBlock.biome.category !== 'forest'));
+            && (subTileBlock.biome.category !== 'forest'));
         })) {
           direction.forEach(subtile => {
             let subTilePos = position.offset(...subtile);
@@ -784,8 +784,14 @@ async function craftWithTable(recipe, count = 1) {
   while (table === null) {
     // sometimes placeblock errors even when it did indeed work
     // so instead we just wait a bit and check if the table is there
-    clearCraftingSlots();
-    await bot.equip(craftingTableID);
+    while (true) {
+      try {
+        await bot.equip(craftingTableID);
+        break;
+      } catch (error) {
+        await clearCraftingSlots();
+      }
+    }
     await bot.placeBlock(craftingSpot, { x: 0, y: 1, z: 0 }).catch(console.log);
     await bot.waitForTicks(10);
     const tableBlockID = mcData.blocksByName["crafting_table"].id;
