@@ -45,7 +45,7 @@ let logItemIDs = [];
 let logBlockIDs = [];
 let farm = [];
 let toTill = [];
-let lastPos = {x: 0, y: 0, z: 0};
+let lastPos = { x: 0, y: 0, z: 0 };
 let stuckTicks = 0;
 
 bot.on('kicked', (reason, loggedIn) => console.log(reason, loggedIn));
@@ -175,7 +175,7 @@ bot.on('death', async (entity) => {
 
 // jump if we're sitting in the same place for 20 seconds
 bot.on('physicsTick', async () => {
-  if (bot.entity.position.equals(lastPos)) {
+  if (bot.entity.position.distanceTo(lastPos) < 1) {
     stuckTicks++;
     if (stuckTicks > 400) {
       stuckTicks = 0;
@@ -198,11 +198,13 @@ bot.on('itemDrop', async (entity) => {
 
 // I thought it would be neat for the bot to retill on the fly
 // but this method makes it backtrace way too often
-/*
+//*
 bot.on('blockUpdate', async (oldBlock, newBlock) => {
   // console.log('blockUpdate', oldBlock, newBlock)
   // replace trampled/decayed farmland if we encounter any
-  if (oldBlock.name === "farmland" && newBlock.name === "dirt") {
+  if (oldBlock.name === "farmland"
+    && newBlock.name === "dirt"
+    && newBlock.position.distanceTo(bot.entity.position) < 5) {
     let dirt = newBlock.position;
     toTill.push(dirt);
   }
@@ -216,7 +218,7 @@ async function mainLoop() {
     }
     await chomp(); */
     farm = detectFarm(farm);
-    let decay = checkDecay(farm);
+    // let decay = checkDecay(farm); // lets see how we go without fixing trample
     let neighbours = getFlatNeighbours(farm, 2000, false);
     console.log(timeInMMSS(), neighbours.length, "flat neighbours found");
     // if there no neighbours, that means we've expanded to all flat areas
@@ -224,7 +226,7 @@ async function mainLoop() {
     if (neighbours.length == 0) {
       neighbours = getSlopeNeighbours(farm, 2000);
     }
-    toTill = [...decay, ...neighbours];
+    toTill = neighbours; // [...decay, ...neighbours];
     // bot.viewer.drawPoints('todo', toTill.map(elem => elem.offset(0.5, 2, 0.5),
     //   0xff0000, 5)); // these extra args don't work :c
     await hoeAndSow(toTill, 5000);
