@@ -45,6 +45,8 @@ let logItemIDs = [];
 let logBlockIDs = [];
 let farm = [];
 let toTill = [];
+let lastPos = {x: 0, y: 0, z: 0};
+let stuckTicks = 0;
 
 bot.on('kicked', (reason, loggedIn) => console.log(reason, loggedIn));
 bot.on('end', (reason) => console.log(reason));
@@ -161,6 +163,32 @@ bot.on('entityHurt', async (entity) => {
   }
 });
 
+// quit and error if the bot is hurt
+bot.on('death', async (entity) => {
+  if (entity === bot.entity && bot.health < 19) {
+    bot.quit();
+    setTimeout(() => {
+      throw "Hurt!";
+    }, 2000);
+  }
+});
+
+// jump if we're sitting in the same place for 20 seconds
+bot.on('physicsTick', async () => {
+  if (bot.entity.position.equals(lastPos)) {
+    stuckTicks++;
+    if (stuckTicks > 400) {
+      stuckTicks = 0;
+      bot.setControlState('jump', true);
+      await bot.waitForTicks(1);
+      bot.setControlState('jump', false);
+    }
+  } else {
+    stuckTicks = 0;
+    lastPos = bot.entity.position;
+  }
+});
+
 /*
 bot.on('itemDrop', async (entity) => {
     if (mcData == null || entity.name !== "item") return;
@@ -197,10 +225,10 @@ async function mainLoop() {
       neighbours = getSlopeNeighbours(farm, 2000);
     }
     toTill = [...decay, ...neighbours];
-    bot.viewer.drawPoints('todo', toTill.map(elem => elem.offset(0.5, 2, 0.5),
-      0xff0000, 5)); // these extra args don't work :c
+    // bot.viewer.drawPoints('todo', toTill.map(elem => elem.offset(0.5, 2, 0.5),
+    //   0xff0000, 5)); // these extra args don't work :c
     await hoeAndSow(toTill, 5000);
-    bot.viewer.erase('todo');
+    // bot.viewer.erase('todo');
     // no crops available to harvest, wait a little
     await bot.waitForTicks(20);
   }
@@ -352,6 +380,8 @@ async function hoeAndSow(tiles, max = null) {
   ];
   let tillCount = 0;
   while (tiles.length > 0) {
+    bot.viewer.drawPoints('todo', tiles.map(elem => elem.offset(0.5, 2, 0.5),
+      0xff0000, 5));
     await doSurvivalCheck();
     if (max != null && tillCount > max) break;
     if (countInventory('wheat_seeds') < 32) {
