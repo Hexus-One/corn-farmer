@@ -782,7 +782,7 @@ async function craftWithTable(recipe, count = 1) {
     mcData.blocksByName["air"].id,
     mcData.blocksByName["cave_air"].id
   ];
-  getCraftingTable();
+  await getCraftingTable();
   // Find somewhere to put the crafting table.
   let solidBlocks = bot.findBlocks({
     matching: (block) => {
